@@ -1,0 +1,39 @@
+{
+  "interfaces": [
+    {
+      "name": "eth0",
+      "subnet": "10.100.0.0",
+      "mask-length": 24,
+      "color": "magenta",
+      "comments": "Example sub-object",
+      "ignore-warnings": true,
+      "ignore-errors": true
+    }
+  ],
+  "nat-settings": {
+    "auto-rule": "true",
+    "method": "hide",
+    "hide-behind": "gateway"
+  },
+  "host-servers": {
+    "dns-server": false,
+    "mail-server": false,
+    "web-server": true,
+    "web-server-config": {
+      "additional-ports": [],
+      "application-engines": [],
+      "listen-standard-port": false,
+      "operating-system": "sparc solaris"
+    }
+  },
+  "name": "Example_Host_ipv6-address",
+  "set-if-exists": true,
+  "color": "forest green",
+  "comments": "Full host using ipv6-address (verified against API v2.0.1)",
+  "details-level": "standard",
+  "groups": [],
+  "tags": [],
+  "ignore-warnings": true,
+  "ignore-errors": true,
+  "ipv6-address": "2001:db8:85a3::2262"
+}

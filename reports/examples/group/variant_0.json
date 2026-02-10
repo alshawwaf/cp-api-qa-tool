@@ -1,0 +1,11 @@
+{
+  "members": [],
+  "name": "Example_Group_Object",
+  "color": "dark gold",
+  "comments": "Full group with all supported fields (verified against API v2.0.1)",
+  "details-level": "standard",
+  "groups": [],
+  "tags": [],
+  "ignore-warnings": true,
+  "ignore-errors": true
+}

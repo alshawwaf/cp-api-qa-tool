@@ -1,0 +1,18 @@
+{
+  "nat-settings": {
+    "auto-rule": "true",
+    "method": "hide",
+    "hide-behind": "gateway"
+  },
+  "name": "Example_Address_Range_ipv4-address-first-ipv4-address-last",
+  "set-if-exists": true,
+  "color": "dark orange",
+  "comments": "Full address-range using ipv4-address-first, ipv4-address-last (verified against API v2.0.1)",
+  "details-level": "uid",
+  "groups": [],
+  "tags": [],
+  "ignore-warnings": true,
+  "ignore-errors": true,
+  "ipv4-address-last": "10.100.1.30",
+  "ipv4-address-first": "10.100.1.10"
+}

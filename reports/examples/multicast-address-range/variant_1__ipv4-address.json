@@ -1,0 +1,12 @@
+{
+  "name": "Example_Multicast_Address_Range_ipv4-address",
+  "set-if-exists": true,
+  "color": "forest green",
+  "comments": "Full multicast-address-range using ipv4-address (verified against API v2.0.1)",
+  "details-level": "uid",
+  "groups": [],
+  "tags": [],
+  "ignore-warnings": true,
+  "ignore-errors": true,
+  "ipv4-address": "224.0.1.20"
+}

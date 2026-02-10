@@ -1,0 +1,19 @@
+{
+  "nat-settings": {
+    "auto-rule": "true",
+    "method": "hide",
+    "hide-behind": "gateway"
+  },
+  "broadcast": "allow",
+  "name": "Example_Network_subnet-subnet-mask",
+  "set-if-exists": true,
+  "color": "violet red",
+  "comments": "Full network using subnet, subnet-mask (verified against API v2.0.1)",
+  "details-level": "full",
+  "groups": [],
+  "tags": [],
+  "ignore-warnings": true,
+  "ignore-errors": true,
+  "subnet": "10.100.0.0",
+  "subnet-mask": "255.255.0.0"
+}

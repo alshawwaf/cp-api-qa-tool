@@ -1,0 +1,19 @@
+{
+  "nat-settings": {
+    "auto-rule": "true",
+    "method": "hide",
+    "hide-behind": "gateway"
+  },
+  "broadcast": "allow",
+  "name": "Example_Network_mask-length4-subnet",
+  "set-if-exists": true,
+  "color": "violet red",
+  "comments": "Full network using mask-length4, subnet (verified against API v2.0.1)",
+  "details-level": "full",
+  "groups": [],
+  "tags": [],
+  "ignore-warnings": true,
+  "ignore-errors": true,
+  "subnet": "10.100.0.0",
+  "mask-length4": 24
+}

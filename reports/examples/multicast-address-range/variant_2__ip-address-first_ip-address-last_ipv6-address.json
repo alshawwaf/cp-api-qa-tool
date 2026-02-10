@@ -1,0 +1,14 @@
+{
+  "ip-address-first": "224.0.1.10",
+  "ip-address-last": "224.0.1.30",
+  "name": "Example_Multicast_Address_Range_ip-address-first-ip-address-last",
+  "set-if-exists": true,
+  "color": "forest green",
+  "comments": "Full multicast-address-range using ip-address-first, ip-address-last, ipv6-address (verified against API v2.0.1)",
+  "details-level": "uid",
+  "groups": [],
+  "tags": [],
+  "ignore-warnings": true,
+  "ignore-errors": true,
+  "ipv6-address": "ff05::1:10"
+}
