@@ -16,7 +16,13 @@ import random
 import time
 from typing import Any
 
-from cp_qa.constants import CLEANUP_ORDER, MAX_RETRIES
+from cp_qa.constants import (
+    CLEANUP_ORDER,
+    DEMO_PREFIX,
+    DISCOVERABLE_PREFIXES,
+    DISCOVERABLE_TYPES,
+    MAX_RETRIES,
+)
 from cp_qa.engine.autofix import auto_fix_payload
 from cp_qa.engine.params import extract_params_from_obj
 from cp_qa.engine.payloads import generate_payloads
@@ -168,7 +174,10 @@ def run_demo_cleanup(client: Any, manifest: list[dict]) -> dict:
         for entry in by_type[obj_type]:
             name = entry["name"]
             log.info("  Deleting %s: %s...", obj_type, name)
-            res = client.run_command(f"delete-{obj_type}", {"name": name})
+            res = client.run_command(
+                f"delete-{obj_type}",
+                {"name": name, "ignore-warnings": True, "ignore-errors": True},
+            )
             ok = (
                 "uid" in res
                 or res.get("code") == "success"
@@ -210,7 +219,10 @@ def run_demo_cleanup(client: Any, manifest: list[dict]) -> dict:
         for entry in entries:
             name = entry["name"]
             log.info("  Deleting (unordered) %s: %s...", obj_type, name)
-            res = client.run_command(f"delete-{obj_type}", {"name": name})
+            res = client.run_command(
+                f"delete-{obj_type}",
+                {"name": name, "ignore-warnings": True, "ignore-errors": True},
+            )
             ok = (
                 "uid" in res
                 or res.get("code") == "success"
@@ -223,6 +235,54 @@ def run_demo_cleanup(client: Any, manifest: list[dict]) -> dict:
 
     log.info("DEMO CLEANUP complete: %d deleted, %d failed", deleted, failed)
     return {"deleted": deleted, "failed": failed}
+
+
+# =========================================================================
+# Server-side discovery
+# =========================================================================
+
+def discover_demo_objects(client: Any) -> list[dict]:
+    """Sweep the server for all objects matching known prefixes.
+
+    Queries every type in :data:`DISCOVERABLE_TYPES` with each prefix
+    in :data:`DISCOVERABLE_PREFIXES`.  Returns a manifest-compatible
+    list so discovered objects can be fed directly into
+    :func:`run_demo_cleanup`.
+
+    Args:
+        client: Authenticated API client.
+
+    Returns:
+        List of ``{"type": str, "name": str, "uid": str}`` dicts,
+        ordered to match :data:`DISCOVERABLE_TYPES` (dependency-safe).
+    """
+    found: list[dict] = []
+    seen: set[str] = set()  # (type, name) dedup
+
+    for plural, singular in DISCOVERABLE_TYPES:
+        show_cmd = f"show-{plural}"
+        for prefix in DISCOVERABLE_PREFIXES:
+            res = client.run_command(show_cmd, {"limit": 50, "filter": prefix})
+
+            # show-<type>s returns "objects"; show-packages returns "packages"
+            items = res.get("objects", res.get("packages", []))
+            if not isinstance(items, list):
+                continue
+
+            for obj in items:
+                name = obj.get("name", "")
+                uid = obj.get("uid", "")
+                if not name.startswith(prefix):
+                    continue
+                key = (singular, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append({"type": singular, "name": name, "uid": uid})
+                log.debug("  Discovered %s: %s", singular, name)
+
+    log.info("Server-side discovery found %d objects", len(found))
+    return found
 
 
 # =========================================================================

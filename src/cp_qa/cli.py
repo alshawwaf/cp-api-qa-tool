@@ -169,30 +169,65 @@ def _run_demo_create(
 
 
 def _run_demo_cleanup(engine: APIQAEngine, client: APIClient) -> None:
-    """Demo mode: load the manifest and delete everything.
+    """Demo mode: delete everything created by demo/QA runs.
+
+    Uses a two-phase approach:
+      1. Load the manifest (if present) as the primary deletion list.
+      2. Run a server-side discovery sweep for any DEMO_/QA_ objects
+         not covered by the manifest (orphaned services, helpers, etc.).
 
     Retries up to 3 passes for stubborn objects.
     """
-    if not os.path.exists(MANIFEST_PATH):
-        log.error("No manifest found at %s. Nothing to clean up.", MANIFEST_PATH)
-        log.error(
-            "Run '--mode demo --action create' first to populate demo objects."
+    # --- Phase 1: Load manifest (if available) ---
+    manifest: list[dict] = []
+    if os.path.exists(MANIFEST_PATH):
+        with open(MANIFEST_PATH, "r", encoding="utf-8") as fh:
+            manifest = json.load(fh)
+        log.info(
+            "Loaded manifest with %d entries from %s",
+            len(manifest),
+            MANIFEST_PATH,
         )
+    else:
+        log.info("No manifest found — will use server-side discovery only.")
+
+    # --- Phase 2: Server-side discovery sweep ---
+    log.info("Running server-side discovery sweep...")
+    discovered = engine.discover_demo_objects()
+
+    # Merge: add any discovered objects not already in the manifest
+    manifest_keys: set[tuple[str, str]] = {
+        (e["type"], e["name"]) for e in manifest
+    }
+    merged_count = 0
+    for entry in discovered:
+        key = (entry["type"], entry["name"])
+        if key not in manifest_keys:
+            manifest.append(entry)
+            manifest_keys.add(key)
+            merged_count += 1
+    if merged_count:
+        log.info(
+            "Discovery found %d additional objects not in manifest",
+            merged_count,
+        )
+
+    if not manifest:
+        log.info("Nothing to clean up — server is already clean.")
         return
 
-    with open(MANIFEST_PATH, "r", encoding="utf-8") as fh:
-        manifest = json.load(fh)
-
-    log.info("Loaded manifest with %d entries from %s", len(manifest), MANIFEST_PATH)
+    log.info("Total objects to delete: %d", len(manifest))
 
     # Discard other sessions to release object locks
     log.info("Discarding other sessions to release locks...")
     try:
-        sessions_res = client.run_command(
-            "show-sessions", {"details-level": "uid", "limit": 50}
-        )
         my_sid = client.headers.get("X-chkp-sid", "")
+        sessions_res = client.run_command(
+            "show-sessions", {"details-level": "full", "limit": 50}
+        )
         for s in sessions_res.get("objects", []):
+            if not isinstance(s, dict):
+                continue
             s_uid = s.get("uid", "")
             if s_uid and s_uid != my_sid:
                 try:
@@ -202,6 +237,13 @@ def _run_demo_cleanup(engine: APIQAEngine, client: APIClient) -> None:
                     pass
     except Exception as exc:
         log.warning("  Could not enumerate sessions: %s", exc)
+
+    # Discard own pending changes from previous runs
+    try:
+        client.run_command("discard", {})
+        log.info("  Discarded own pending changes.")
+    except Exception:
+        pass
 
     # Delete with retry (up to 3 passes)
     remaining = list(manifest)
@@ -233,10 +275,22 @@ def _run_demo_cleanup(engine: APIQAEngine, client: APIClient) -> None:
         if remaining:
             log.info("  %d objects still remain, retrying...", len(remaining))
 
-    if not remaining:
+    # Final verification sweep
+    leftover = engine.discover_demo_objects()
+    if leftover:
+        log.warning(
+            "%d objects still found on server after cleanup:", len(leftover)
+        )
+        for entry in leftover:
+            log.warning("  %s: %s", entry["type"], entry["name"])
+    else:
+        log.info("Verification complete — server is clean.")
+
+    # Remove manifest if cleanup succeeded
+    if not remaining and os.path.exists(MANIFEST_PATH):
         os.remove(MANIFEST_PATH)
         log.info("Manifest removed. All demo objects have been cleaned up.")
-    else:
+    elif remaining:
         with open(MANIFEST_PATH, "w", encoding="utf-8") as fh:
             json.dump(remaining, fh, indent=2)
         log.warning(

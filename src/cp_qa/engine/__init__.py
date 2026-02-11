@@ -185,3 +185,14 @@ class APIQAEngine:
             List of manifest entries for the policy package.
         """
         return demo.create_demo_policy(self.client, manifest)
+
+    def discover_demo_objects(self) -> list[dict]:
+        """Sweep the server for all objects matching known prefixes.
+
+        Queries every supported type for objects whose name starts with
+        ``DEMO_`` or ``QA_``.  Returns a manifest-compatible list.
+
+        Returns:
+            List of ``{"type": str, "name": str, "uid": str}`` dicts.
+        """
+        return demo.discover_demo_objects(self.client)

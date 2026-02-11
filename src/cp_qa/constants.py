@@ -24,6 +24,16 @@ QA_SUMMARY_REPORT_PATH = "reports/QA_SUMMARY_REPORT.md"
 QA_EXAMPLES_DIR = "reports/examples"
 
 # ---------------------------------------------------------------------------
+# Naming prefixes
+# ---------------------------------------------------------------------------
+
+#: Prefix used for all demo-created objects.
+DEMO_PREFIX = "DEMO_"
+
+#: All prefixes to search for during discovery cleanup.
+DISCOVERABLE_PREFIXES: list[str] = ["DEMO_", "QA_"]
+
+# ---------------------------------------------------------------------------
 # Self-healing retry budget
 # ---------------------------------------------------------------------------
 
@@ -92,8 +102,56 @@ CLEANUP_ORDER: list[str] = [
     "service-tcp",
     "service-udp",
     "service-icmp",
+    "service-other",
+    "service-sctp",
     "simple-gateway",
     "simple-cluster",
     "checkpoint-host",
     "interoperable-device",
+]
+
+# ---------------------------------------------------------------------------
+# Server-side discovery: plural "show" command -> singular type
+# ---------------------------------------------------------------------------
+
+#: Mapping of ``show-<plural>`` commands to singular type names.
+#: Used by ``discover_demo_objects()`` to sweep the server for leftover
+#: objects whose names match a known prefix (DEMO_, QA_, etc.).
+DISCOVERABLE_TYPES: list[tuple[str, str]] = [
+    # Policy & rules (must be deleted first)
+    ("packages", "package"),
+    # Service groups (before individual services)
+    ("service-groups", "service-group"),
+    # VPN communities
+    ("vpn-communities-meshed", "vpn-community-meshed"),
+    ("vpn-communities-star", "vpn-community-star"),
+    # Groups (before their members)
+    ("groups-with-exclusion", "group-with-exclusion"),
+    ("time-groups", "time-group"),
+    ("groups", "group"),
+    ("gsn-handover-groups", "gsn-handover-group"),
+    # Core network objects
+    ("hosts", "host"),
+    ("networks", "network"),
+    ("wildcards", "wildcard"),
+    ("address-ranges", "address-range"),
+    ("multicast-address-ranges", "multicast-address-range"),
+    ("dns-domains", "dns-domain"),
+    # Extended objects
+    ("security-zones", "security-zone"),
+    ("dynamic-objects", "dynamic-object"),
+    ("tags", "tag"),
+    ("times", "time"),
+    ("network-feeds", "network-feed"),
+    # Services
+    ("service-tcps", "service-tcp"),
+    ("service-udps", "service-udp"),
+    ("service-icmps", "service-icmp"),
+    ("services-other", "service-other"),
+    ("services-sctp", "service-sctp"),
+    # Gateways & servers
+    ("simple-gateways", "simple-gateway"),
+    ("simple-clusters", "simple-cluster"),
+    ("checkpoint-hosts", "checkpoint-host"),
+    ("interoperable-devices", "interoperable-device"),
 ]
