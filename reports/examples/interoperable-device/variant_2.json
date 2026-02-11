@@ -1,8 +1,0 @@
-{
-  "name": "Example_Interoperable_Device_Object",
-  "color": "lemon chiffon",
-  "comments": "Full interoperable-device with all supported fields (verified against API v2.0.1)",
-  "ignore-warnings": true,
-  "ignore-errors": true,
-  "ipv4-address": "10.100.97.45"
-}

@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
+*.egg
 dist/
 build/
 
@@ -18,6 +19,11 @@ venv/
 
 # Runtime artifacts (regenerated on each run)
 logs/
+reports/
+
+# Environment / secrets
+.env
+.env.*
 
 # OS
 Thumbs.db

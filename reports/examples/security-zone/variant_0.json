@@ -1,9 +1,0 @@
-{
-  "name": "Example_Security_Zone_Object",
-  "color": "cyan",
-  "comments": "Full security-zone with all supported fields (verified against API v2.0.1)",
-  "details-level": "standard",
-  "tags": [],
-  "ignore-warnings": true,
-  "ignore-errors": true
-}

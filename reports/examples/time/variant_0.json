@@ -1,9 +1,0 @@
-{
-  "name": "Example_Time_Object",
-  "color": "olive",
-  "comments": "Full time with all supported fields (verified against API v2.0.1)",
-  "ignore-warnings": true,
-  "ignore-errors": true,
-  "start-now": true,
-  "end-never": true
-}

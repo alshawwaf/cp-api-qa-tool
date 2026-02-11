@@ -1,9 +1,0 @@
-{
-  "name": "Example_Dynamic_Object_Object",
-  "color": "firebrick",
-  "comments": "Full dynamic-object with all supported fields (verified against API v2.0.1)",
-  "details-level": "full",
-  "tags": [],
-  "ignore-warnings": true,
-  "ignore-errors": true
-}
