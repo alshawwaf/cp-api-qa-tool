@@ -282,6 +282,188 @@ def export_examples(results: list[dict], base_dir: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Per-type reports (saved alongside examples)
+# ---------------------------------------------------------------------------
+
+def export_per_type_reports(results: list[dict], base_dir: str) -> None:
+    """Generate a separate QA report and raw JSON for each object type.
+
+    For every tested object type, creates two files inside its example
+    directory:
+
+    - ``QA_REPORT.md``   — Self-contained Markdown audit report covering
+      all variants of that type.
+    - ``QA_RAW_DATA.json`` — Raw request/response data for all lifecycle
+      steps of that type.
+
+    Args:
+        results:  List of result dicts from lifecycle testing.
+        base_dir: Examples base directory (e.g. ``reports/examples``).
+    """
+    if not results:
+        log.warning("No results to export per-type reports.")
+        return
+
+    skip = _variants_to_skip(results)
+
+    # Group results by object type
+    by_type: dict[str, list[dict]] = {}
+    for res in results:
+        by_type.setdefault(res["type"], []).append(res)
+
+    count = 0
+    for obj_type, type_results in by_type.items():
+        out_dir = os.path.join(base_dir, obj_type)
+        os.makedirs(out_dir, exist_ok=True)
+
+        # --- Per-type raw JSON ---
+        filtered = [
+            r for r in type_results if (r["type"], r["variant"]) not in skip
+        ]
+        raw_path = os.path.join(out_dir, "QA_RAW_DATA.json")
+        with open(raw_path, "w", encoding="utf-8") as fh:
+            json.dump(filtered, fh, indent=2)
+
+        # --- Per-type Markdown report ---
+        md_path = os.path.join(out_dir, "QA_REPORT.md")
+        _write_per_type_markdown(obj_type, type_results, skip, md_path)
+        count += 1
+
+    log.info("Exported per-type reports for %d object types to %s", count, base_dir)
+
+
+def _write_per_type_markdown(
+    obj_type: str,
+    type_results: list[dict],
+    skip: set[tuple[str, int]],
+    file_path: str,
+) -> None:
+    """Write a self-contained Markdown report for a single object type."""
+    add_keys = _variant_add_keys(type_results, skip)
+    labels = _variant_labels(add_keys)
+    summary = _variant_summary(type_results, skip)
+
+    lines: list[str] = [
+        f"# QA Report: `{obj_type}`",
+        f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+    ]
+
+    # Summary table
+    lines += [
+        "## Summary",
+        "",
+        "| Variant | Status | Duration (s) | Distinguishing Fields |",
+        "| :--- | :--- | :--- | :--- |",
+    ]
+
+    passed = 0
+    total = 0
+    for (otype, var), data in summary.items():
+        if otype != obj_type:
+            continue
+        total += 1
+        status = "PASSED" if data["success"] else "FAILED"
+        if data["success"]:
+            passed += 1
+        label = labels.get((otype, var), "")
+        if not label:
+            label = "All fields (no alternatives)"
+        lines.append(
+            f"| {var} | {status} | {data['total_duration']:.2f} | {label} |"
+        )
+
+    lines += [
+        "",
+        f"**Result: {passed}/{total} variants passed**",
+        "",
+    ]
+
+    # Detailed per-variant sections
+    current_variant: int | None = None
+    for res in type_results:
+        variant = res.get("variant", 0)
+        if (obj_type, variant) in skip:
+            continue
+
+        command = res.get("command", "")
+        success = res.get("success", False)
+        payload = res.get("payload", {})
+        response = res.get("response", {})
+        duration = res.get("duration", 0.0)
+
+        # Variant header
+        if variant != current_variant:
+            if current_variant is not None:
+                lines.append("</details>\n")
+            current_variant = variant
+
+            var_data = summary.get((obj_type, variant), {})
+            var_status = "PASSED" if var_data.get("success") else "FAILED"
+            total_dur = var_data.get("total_duration", 0.0)
+
+            label = labels.get((obj_type, variant), "")
+            if label and label != "Same fields":
+                title = f"[{var_status}] Variant {variant} — {label} ({total_dur:.2f}s)"
+            else:
+                title = f"[{var_status}] Variant {variant} ({total_dur:.2f}s)"
+
+            lines += [
+                "---",
+                f"<details>",
+                f"<summary><b>{title}</b></summary>",
+                "",
+                "### Performance",
+                "| Step | Status | Duration (s) |",
+                "| :--- | :--- | :--- |",
+            ]
+            var_cmds = [
+                r
+                for r in type_results
+                if r["variant"] == variant
+                and (obj_type, variant) not in skip
+            ]
+            for vcmd in var_cmds:
+                cst = "PASSED" if vcmd["success"] else "FAILED"
+                lines.append(
+                    f"| `{vcmd['command']}` | {cst} | {vcmd['duration']:.3f} |"
+                )
+            lines += ["", "### Details", ""]
+
+        # Individual command
+        status_label = "PASSED" if success else "FAILED"
+        lines += [
+            f"#### [{status_label}] `{command}` ({duration:.2f}s)",
+            "",
+            "**Payload:**",
+            "```json",
+            json.dumps(payload, indent=2),
+            "```",
+            "",
+            "**Response:**",
+            "```json",
+            json.dumps(response, indent=2),
+            "```",
+        ]
+
+        if not success:
+            errs = response.get("blocking-errors", response.get("errors", []))
+            if errs:
+                lines.append("\n**Errors:**")
+                for e in errs:
+                    msg = e.get("message", e) if isinstance(e, dict) else e
+                    lines.append(f"- {msg}")
+
+        lines.append("")
+
+    if current_variant is not None:
+        lines.append("</details>")
+
+    with open(file_path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 

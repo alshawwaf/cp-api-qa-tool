@@ -117,12 +117,14 @@ def _run_qa_mode(
     engine.export_report(QA_RAW_DATA_PATH)
     engine.export_markdown_report(QA_SUMMARY_REPORT_PATH)
     engine.export_examples(QA_EXAMPLES_DIR)
+    engine.export_per_type_reports(QA_EXAMPLES_DIR)
 
     log.info(
         "QA Run complete. Reports saved to %s and %s",
         QA_RAW_DATA_PATH,
         QA_SUMMARY_REPORT_PATH,
     )
+    log.info("Per-type reports saved alongside examples in %s", QA_EXAMPLES_DIR)
     client.publish()
 
 

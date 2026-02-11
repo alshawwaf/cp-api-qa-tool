@@ -137,6 +137,17 @@ class APIQAEngine:
         """
         reports.export_examples(self.results, base_dir)
 
+    def export_per_type_reports(self, base_dir: str) -> None:
+        """Generate a separate QA report and raw JSON for each object type.
+
+        Each type gets ``QA_REPORT.md`` and ``QA_RAW_DATA.json`` saved
+        alongside its example payloads.
+
+        Args:
+            base_dir: Examples base directory (e.g. ``reports/examples``).
+        """
+        reports.export_per_type_reports(self.results, base_dir)
+
     # ------------------------------------------------------------------
     # Demo mode
     # ------------------------------------------------------------------
