@@ -87,16 +87,11 @@ def get_sub_object_name_hints(object_name: str) -> dict:
     """
     name_lower = object_name.lower()
 
-    if "interface" in name_lower:
+    if "interface" in name_lower and object_name.endswith("Request"):
         return {
             "name": "eth0",
             "subnet": "10.200.0.0",
             "mask-length": 24,
-            "subnet4": "10.200.0.0",
-            "mask-length4": 24,
-            "subnet6": "2001:db8:200::",
-            "mask-length6": 64,
-            "subnet-mask": "255.255.255.0",
             "comments": "QA test interface",
         }
     if "webserver" in name_lower or "web_server" in name_lower:
@@ -110,6 +105,13 @@ def get_sub_object_name_hints(object_name: str) -> dict:
             "dns-server": "true",
             "mail-server": "true",
             "web-server": "true",
+        }
+    if "nat-settings" in name_lower or "natsettings" in name_lower:
+        return {
+            "auto-rule": True,
+            "method": "hide",
+            "hide-behind": "gateway",
+            "install-on": "Policy Targets"
         }
     if "ike-phase" in name_lower:
         return {
@@ -317,6 +319,11 @@ def generate_test_data(
             if "last" in name:
                 return "ff05::1:30"
             return "ff05::1:10"
+        # Deterministic first/last to guarantee first < last
+        if "first" in name:
+            return "2001:db8:85a3::1000"
+        if "last" in name:
+            return "2001:db8:85a3::2000"
         val = seed if seed is not None else random.randint(0x1000, 0x4000)
         return f"2001:db8:85a3::{val:04x}"
 
@@ -360,7 +367,11 @@ def generate_test_data(
     if name == "encryption-method":
         return "prefer ikev2 but support ikev1"
     if name == "encryption-suite":
-        return "custom"
+        return random.choice(["suite-b-gcm-256", "custom", "vpn a", "vpn b"])
+    if name == "vpn-routing":
+        return "to center and to other satellites"
+    if name == "tunnel-granularity":
+        return "per_subnet"
 
     # Default string fallback
     return f"QA_{random.randint(1000, 9999)}"

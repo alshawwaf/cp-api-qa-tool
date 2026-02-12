@@ -63,11 +63,33 @@ NETWORK_OBJECTS_TYPES: list[str] = [
     "time-group",
     "gsn-handover-group",
     "network-feed",
+    # Services
+    "service-tcp",
+    "service-udp",
+    "service-icmp",
+    "service-icmp6",
+    "service-sctp",
+    "service-other",
+    "service-dce-rpc",
+    "service-rpc",
+    "service-compound-tcp",
+    "service-citrix-tcp",
+    "service-group",
+    # Application & URL Filtering
+    "application-site",
+    "application-site-category",
+    "application-site-group",
+    # Identity & Access
+    "access-role",
+    "identity-tag",
+    # Threat Prevention
+    "threat-indicator",
     # Gateways & Servers
     "simple-gateway",
     "simple-cluster",
     "checkpoint-host",
     "interoperable-device",
+    "lsv-profile",
     # VPN Communities
     "vpn-community-meshed",
     "vpn-community-star",
@@ -81,13 +103,16 @@ NETWORK_OBJECTS_TYPES: list[str] = [
 #: deleted **first** — dependents before the objects they reference.
 CLEANUP_ORDER: list[str] = [
     "package",  # cascade-deletes all rules + layers
-    "service-group",  # before individual services
+    # Groups (before their members)
+    "application-site-group",
+    "service-group",
     "vpn-community-meshed",
     "vpn-community-star",
-    "group-with-exclusion",  # depends on groups
-    "time-group",  # depends on time objects
-    "group",  # depends on hosts/networks/ranges
+    "group-with-exclusion",
+    "time-group",
+    "group",
     "gsn-handover-group",
+    # Core network objects
     "host",
     "network",
     "wildcard",
@@ -99,15 +124,31 @@ CLEANUP_ORDER: list[str] = [
     "tag",
     "time",
     "network-feed",
+    # Services
     "service-tcp",
     "service-udp",
     "service-icmp",
+    "service-icmp6",
     "service-other",
     "service-sctp",
+    "service-dce-rpc",
+    "service-rpc",
+    "service-compound-tcp",
+    "service-citrix-tcp",
+    # Application & URL Filtering
+    "application-site",
+    "application-site-category",
+    # Identity & Access
+    "access-role",
+    "identity-tag",
+    # Threat Prevention
+    "threat-indicator",
+    # Gateways & Servers
     "simple-gateway",
     "simple-cluster",
     "checkpoint-host",
     "interoperable-device",
+    "lsv-profile",
 ]
 
 # ---------------------------------------------------------------------------
@@ -120,12 +161,12 @@ CLEANUP_ORDER: list[str] = [
 DISCOVERABLE_TYPES: list[tuple[str, str]] = [
     # Policy & rules (must be deleted first)
     ("packages", "package"),
-    # Service groups (before individual services)
+    # Groups (before their members)
+    ("application-site-groups", "application-site-group"),
     ("service-groups", "service-group"),
     # VPN communities
     ("vpn-communities-meshed", "vpn-community-meshed"),
     ("vpn-communities-star", "vpn-community-star"),
-    # Groups (before their members)
     ("groups-with-exclusion", "group-with-exclusion"),
     ("time-groups", "time-group"),
     ("groups", "group"),
@@ -144,14 +185,28 @@ DISCOVERABLE_TYPES: list[tuple[str, str]] = [
     ("times", "time"),
     ("network-feeds", "network-feed"),
     # Services
-    ("service-tcps", "service-tcp"),
-    ("service-udps", "service-udp"),
-    ("service-icmps", "service-icmp"),
+    ("services-tcp", "service-tcp"),
+    ("services-udp", "service-udp"),
+    ("services-icmp", "service-icmp"),
+    ("services-icmp6", "service-icmp6"),
     ("services-other", "service-other"),
     ("services-sctp", "service-sctp"),
+    ("services-dce-rpc", "service-dce-rpc"),
+    ("services-rpc", "service-rpc"),
+    ("services-compound-tcp", "service-compound-tcp"),
+    ("services-citrix-tcp", "service-citrix-tcp"),
+    # Application & URL Filtering
+    ("application-sites", "application-site"),
+    ("application-site-categories", "application-site-category"),
+    # Identity & Access
+    ("access-roles", "access-role"),
+    ("identity-tags", "identity-tag"),
+    # Threat Prevention
+    ("threat-indicators", "threat-indicator"),
     # Gateways & servers
     ("simple-gateways", "simple-gateway"),
     ("simple-clusters", "simple-cluster"),
     ("checkpoint-hosts", "checkpoint-host"),
     ("interoperable-devices", "interoperable-device"),
+    ("lsv-profiles", "lsv-profile"),
 ]

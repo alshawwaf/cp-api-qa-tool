@@ -55,7 +55,7 @@ def export_report(results: list[dict], file_path: str) -> None:
 # Markdown summary report
 # ---------------------------------------------------------------------------
 
-def export_markdown_report(results: list[dict], file_path: str) -> None:
+def export_markdown_report(results: list[dict], file_path: str, *, api_version: str = "") -> None:
     """Generate a professional performance audit report in Markdown.
 
     The report contains:
@@ -77,9 +77,11 @@ def export_markdown_report(results: list[dict], file_path: str) -> None:
     labels = _variant_labels(add_keys)
     summary = _variant_summary(results, skip)
 
+    ver_label = f"v{api_version}" if api_version else "unknown"
     lines: list[str] = [
         "# API QA Performance Audit Report",
-        f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**API Version:** {ver_label}  ",
+        f"**Generated:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
         "> **Why multiple variants?** The API spec defines mutually exclusive "
         "field-alternatives",
@@ -204,7 +206,7 @@ def export_markdown_report(results: list[dict], file_path: str) -> None:
 # Example payloads
 # ---------------------------------------------------------------------------
 
-def export_examples(results: list[dict], base_dir: str) -> None:
+def export_examples(results: list[dict], base_dir: str, *, api_version: str = "") -> None:
     """Export each variant as a standalone JSON example file.
 
     Structure::
@@ -242,26 +244,27 @@ def export_examples(results: list[dict], base_dir: str) -> None:
         add_rec = next(
             (r for r in records if r["command"].startswith("add-")), None
         )
-        if not add_rec:
-            continue
+        if not add_rec or not add_rec.get("success", False):
+            continue  # Only export proven working payloads
 
         payload = _sanitize_payload(dict(add_rec["payload"]))
         dist_fields = labels.get((otype, var), [])
 
         # Professional name and comment
         pretty = otype.replace("-", " ").title().replace(" ", "_")
+        ver_label = f"v{api_version}" if api_version else "latest"
         if dist_fields:
             tag = "-".join(dist_fields[:2])
             payload["name"] = f"Example_{pretty}_{tag}"
             payload["comments"] = (
                 f"Full {otype} using {', '.join(dist_fields)} "
-                f"(verified against API v2.0.1)"
+                f"(verified against API {ver_label})"
             )
         else:
             payload["name"] = f"Example_{pretty}_Object"
             payload["comments"] = (
                 f"Full {otype} with all supported fields "
-                f"(verified against API v2.0.1)"
+                f"(verified against API {ver_label})"
             )
 
         # File name
@@ -285,7 +288,7 @@ def export_examples(results: list[dict], base_dir: str) -> None:
 # Per-type reports (saved alongside examples)
 # ---------------------------------------------------------------------------
 
-def export_per_type_reports(results: list[dict], base_dir: str) -> None:
+def export_per_type_reports(results: list[dict], base_dir: str, *, api_version: str = "") -> None:
     """Generate a separate QA report and raw JSON for each object type.
 
     For every tested object type, creates two files inside its example
@@ -326,7 +329,7 @@ def export_per_type_reports(results: list[dict], base_dir: str) -> None:
 
         # --- Per-type Markdown report ---
         md_path = os.path.join(out_dir, "QA_REPORT.md")
-        _write_per_type_markdown(obj_type, type_results, skip, md_path)
+        _write_per_type_markdown(obj_type, type_results, skip, md_path, api_version=api_version)
         count += 1
 
     log.info("Exported per-type reports for %d object types to %s", count, base_dir)
@@ -337,15 +340,19 @@ def _write_per_type_markdown(
     type_results: list[dict],
     skip: set[tuple[str, int]],
     file_path: str,
+    *,
+    api_version: str = "",
 ) -> None:
     """Write a self-contained Markdown report for a single object type."""
     add_keys = _variant_add_keys(type_results, skip)
     labels = _variant_labels(add_keys)
     summary = _variant_summary(type_results, skip)
 
+    ver_label = f"v{api_version}" if api_version else "unknown"
     lines: list[str] = [
         f"# QA Report: `{obj_type}`",
-        f"Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**API Version:** {ver_label}  ",
+        f"**Generated:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
     ]
 

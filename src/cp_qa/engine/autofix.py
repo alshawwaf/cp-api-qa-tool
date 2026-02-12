@@ -50,6 +50,15 @@ def auto_fix_payload(
     """
     fixed = False
 
+    # --- Transient server errors (NPE, generic_server_error) — retry ----
+    if any(x in error_text for x in [
+        "null pointer exception", "generic_server_error",
+        "management server failed to execute command",
+        "currently locked by another user",
+    ]):
+        log.info("  FIX: Transient server error detected — retrying unchanged payload")
+        return True
+
     # --- Web Server must be true when config is populated ----------------
     if "web server" in error_text and "true" in error_text:
         if "host-servers" in payload and isinstance(payload["host-servers"], dict):
@@ -69,8 +78,14 @@ def auto_fix_payload(
         fixed = _fix_missing_mask(payload, error_text) or fixed
 
     # --- Ambiguous IP Address configuration ------------------------------
-    if "ambiguous" in error_text and "ip address" in error_text:
+    if "ambiguous" in error_text and any(
+        x in error_text for x in ["ip address", "ipv4 address", "ipv6 address"]
+    ):
         fixed = _fix_ambiguous_ip(payload) or fixed
+
+    # --- Ambiguous mask definition (subnet-mask vs mask-length) ----------
+    if "ambiguous" in error_text and "mask definition" in error_text:
+        fixed = _fix_ambiguous_mask(payload) or fixed
 
     # --- Requested object not found (bad references) ---------------------
     if "requested object" in error_text and "not found" in error_text:
@@ -92,6 +107,17 @@ def auto_fix_payload(
         payload["version"] = "R81.10"
         log.info("  FIX: Set version to 'R81.10'")
         fixed = True
+
+    # --- vpn-domain-type should be manual ---------------------------------
+    if "vpn-domain-type" in error_text and "manual" in error_text:
+        if "vpn-settings" in payload and isinstance(payload["vpn-settings"], dict):
+            payload["vpn-settings"]["vpn-domain-type"] = "manual"
+            log.info("  FIX: Set vpn-settings.vpn-domain-type = 'manual'")
+            fixed = True
+        elif "vpn-settings" in payload:
+            del payload["vpn-settings"]
+            log.info("  FIX: Removed vpn-settings (vpn-domain-type conflict)")
+            fixed = True
 
     # --- NAT hide-behind / generate-nat-rules conflict -------------------
     if "hide-behind" in error_text and "generate-nat-rules" in error_text:
@@ -124,6 +150,39 @@ def auto_fix_payload(
             payload["name"] = "." + name
             log.info("  FIX: Prepended '.' to domain name -> %s", payload["name"])
             fixed = True
+
+    # --- Unrecognized parameter -------------------------------------------
+    if "unrecognized parameter" in error_text:
+        fixed = _fix_unrecognized_param(payload, error_text) or fixed
+
+    # --- VPN community: encryption-suite must be "custom" for IKE phases --
+    if "encryption-suite" in error_text or (
+        "ike-phase" in error_text and "encryption" in error_text
+    ):
+        if "ike-phase-1" in payload or "ike-phase-2" in payload:
+            payload["encryption-suite"] = "custom"
+            log.info("  FIX: Forced encryption-suite='custom' for IKE phases")
+            fixed = True
+
+    # --- VPN community: strip advanced-settings/vpn-routing on error ------
+    if ("advanced-settings" in error_text or "advanced-properties" in error_text) and not fixed:
+        for f in ["advanced-settings", "advanced-properties", "vpn-routing"]:
+            if f in payload:
+                del payload[f]
+                log.info("  FIX: Removed '%s' (VPN sub-object validation error)", f)
+                fixed = True
+
+    # --- VPN community: shared-secrets format issues ----------------------
+    if "shared-secret" in error_text and not fixed:
+        for f in ["shared-secrets", "shared-secret"]:
+            if f in payload:
+                del payload[f]
+                log.info("  FIX: Removed '%s' (shared-secret validation error)", f)
+                fixed = True
+
+    # --- Address range is not valid (first > last) -----------------------
+    if "address range is not valid" in error_text and not fixed:
+        fixed = _fix_address_range_order(payload) or fixed
 
     # --- Generic validation failure (last resort) ------------------------
     if (
@@ -229,6 +288,12 @@ def _fix_ambiguous_ip(payload: dict) -> bool:
                 log.info("  FIX: Removed generic '%s' to resolve ambiguity", g)
         fixed = True
 
+    # Case 4: subnet field conflicts with IP address on non-network types
+    if not fixed and "subnet" in payload and ip_fields:
+        del payload["subnet"]
+        log.info("  FIX: Removed 'subnet' (conflicts with IP address fields)")
+        fixed = True
+
     return fixed
 
 
@@ -299,6 +364,69 @@ def _fix_invalid_nested_value(payload: dict, error_text: str) -> bool:
     return fixed
 
 
+def _fix_ambiguous_mask(payload: dict) -> bool:
+    """Resolve ambiguous mask definitions (mixed mask types).
+
+    The API rejects payloads that include multiple subnet/mask schemes
+    simultaneously (e.g. ``subnet-mask`` alongside ``mask-length4``).
+    This handler picks the most specific valid pair and removes the rest,
+    both at the top level and inside nested ``interfaces[]`` sub-objects.
+    """
+    fixed = False
+
+    # Top-level cleanup
+    fixed = _clean_mask_fields(payload, "top-level") or fixed
+
+    # Nested: fix inside interfaces[] sub-objects
+    if "interfaces" in payload and isinstance(payload["interfaces"], list):
+        for iface in payload["interfaces"]:
+            if isinstance(iface, dict):
+                fixed = _clean_mask_fields(iface, "interfaces[]") or fixed
+
+    return fixed
+
+
+def _clean_mask_fields(obj: dict, context: str) -> bool:
+    """Remove conflicting mask fields from a single dict, keeping one valid pair."""
+    fixed = False
+
+    if "subnet4" in obj and "mask-length4" in obj:
+        # Keep subnet4/mask-length4, remove everything else
+        for f in ["subnet-mask", "subnet", "mask-length", "subnet6", "mask-length6"]:
+            if f in obj:
+                del obj[f]
+                log.info("  FIX: Removed %s.%s (ambiguous with subnet4/mask-length4)", context, f)
+                fixed = True
+    elif "subnet" in obj and "mask-length" in obj:
+        for f in ["subnet-mask", "subnet4", "mask-length4", "subnet6", "mask-length6"]:
+            if f in obj:
+                del obj[f]
+                log.info("  FIX: Removed %s.%s (ambiguous with subnet/mask-length)", context, f)
+                fixed = True
+    elif "subnet-mask" in obj:
+        for f in ["mask-length", "mask-length4", "subnet4", "mask-length6", "subnet6"]:
+            if f in obj:
+                del obj[f]
+                log.info("  FIX: Removed %s.%s (ambiguous with subnet-mask)", context, f)
+                fixed = True
+
+    return fixed
+
+
+def _fix_unrecognized_param(payload: dict, error_text: str) -> bool:
+    """Remove parameters the API doesn't recognize for this object type."""
+    fixed = False
+    # Extract field name from "unrecognized parameter [field-name]"
+    match = re.search(r"unrecognized parameter \[([^\]]+)\]", error_text)
+    if match:
+        field = match.group(1)
+        if field in payload:
+            del payload[field]
+            log.info("  FIX: Removed unrecognized parameter '%s'", field)
+            fixed = True
+    return fixed
+
+
 def _fix_generic_validation(payload: dict) -> bool:
     """Progressive fixes for generic 'validation failed' errors."""
     fixed = False
@@ -345,5 +473,45 @@ def _fix_generic_validation(payload: dict) -> bool:
                 "  FIX: Removed non-essential '%s' to resolve validation", field
             )
             return True
+
+    return fixed
+
+
+def _fix_address_range_order(payload: dict) -> bool:
+    """Swap first/last address pairs when the range is invalid (first > last).
+
+    Handles both IPv4 (dotted) and IPv6 (colon-hex) addresses.
+    """
+    fixed = False
+    for prefix in ["ip-address-", "ipv4-address-", "ipv6-address-"]:
+        first_key = f"{prefix}first"
+        last_key = f"{prefix}last"
+        if first_key not in payload or last_key not in payload:
+            continue
+
+        first_val = str(payload[first_key])
+        last_val = str(payload[last_key])
+
+        # IPv4 comparison
+        if "." in first_val and "." in last_val:
+            f_parts = list(map(int, first_val.split(".")))
+            l_parts = list(map(int, last_val.split(".")))
+            if f_parts > l_parts:
+                payload[first_key], payload[last_key] = last_val, first_val
+                log.info("  FIX: Swapped %s/%s (first > last)", first_key, last_key)
+                fixed = True
+
+        # IPv6 comparison (expand :: and compare)
+        elif ":" in first_val and ":" in last_val:
+            try:
+                import ipaddress
+                f_addr = ipaddress.IPv6Address(first_val)
+                l_addr = ipaddress.IPv6Address(last_val)
+                if f_addr > l_addr:
+                    payload[first_key], payload[last_key] = last_val, first_val
+                    log.info("  FIX: Swapped %s/%s (first > last)", first_key, last_key)
+                    fixed = True
+            except ValueError:
+                pass
 
     return fixed

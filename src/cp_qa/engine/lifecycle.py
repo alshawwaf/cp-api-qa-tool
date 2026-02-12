@@ -25,6 +25,76 @@ from cp_qa.logging import get_logger
 
 log = get_logger(__name__)
 
+# Types that require a ``publish`` between ADD→SET and SET→DELETE
+_PUBLISH_BETWEEN_STEPS = {
+    "vpn-community-meshed", "vpn-community-star",
+    "wildcard", "gsn-handover-group",
+    "simple-gateway", "simple-cluster",
+    "threat-indicator",
+}
+
+_MAX_STEP_RETRIES = 3  # Retries for SET / DELETE on transient errors
+
+
+def _is_success(res: dict) -> bool:
+    """Check whether an API response indicates success."""
+    return (
+        "uid" in res
+        or res.get("code") == "success"
+        or res.get("message") == "OK"
+    )
+
+
+def _is_transient(res: dict) -> bool:
+    """Check whether an API error looks transient (worth retrying)."""
+    msg = str(res.get("message", "")).lower()
+    code = str(res.get("code", "")).lower()
+    return any(x in msg or x in code for x in [
+        "null pointer exception", "generic_server_error",
+        "generic_error", "management server failed",
+        "internal error", "runtime exception",
+    ])
+
+
+def _retry_command(
+    client: Any,
+    command: str,
+    payload: dict,
+    label: str = "",
+    max_retries: int = _MAX_STEP_RETRIES,
+) -> tuple[bool, dict, float]:
+    """Execute a command with retries on transient errors.
+
+    Handles both synchronous (uid in response) and asynchronous
+    (task-id in response) commands automatically.
+
+    Returns:
+        ``(success, response_dict, total_duration)``
+    """
+    total_dur = 0.0
+    res: dict = {}
+    for attempt in range(1, max_retries + 1):
+        if attempt > 1:
+            log.info("  %s retry %d/%d after transient error...", label, attempt, max_retries)
+            time.sleep(3)  # Brief pause before retry
+        t_start = time.perf_counter()
+        res = client.run_command(command, payload)
+        dur = time.perf_counter() - t_start
+        total_dur += dur
+        success = _is_success(res)
+        # Handle async tasks (e.g. simple-cluster SET returns task-id)
+        if not success and "task-id" in res:
+            poll_start = time.perf_counter()
+            success, res = _poll_async_task(client, res["task-id"])
+            total_dur += time.perf_counter() - poll_start
+        if success:
+            log.info("  %s: [%.2fs] PASS", label, total_dur)
+            return True, res, total_dur
+        if not _is_transient(res):
+            break  # Non-transient error — no point retrying
+    log.info("  %s: [%.2fs] %s", label, total_dur, "FAIL")
+    return False, res, total_dur
+
 
 def run_lifecycle_test(
     client: Any,
@@ -56,9 +126,7 @@ def run_lifecycle_test(
     log.info("--- Starting exhaustive QA for object type: %s ---", obj_type)
 
     # Pre-create helper objects if needed
-    helper_group, helper_except_group, helper_time = _create_helpers(
-        client, obj_type
-    )
+    helpers = _create_helpers(client, obj_type)
 
     request_obj_name = add_cmd_spec.get("request")
     obj_def = get_object_by_name(spec, request_obj_name)
@@ -97,9 +165,7 @@ def run_lifecycle_test(
         apply_type_defaults(obj_type, base_payload, spec=spec, current_obj_type=current_obj_type)
 
         # Inject helper object references
-        _inject_helpers(
-            base_payload, obj_type, helper_group, helper_except_group, helper_time
-        )
+        _inject_helpers(base_payload, obj_type, helpers)
 
         # === ADAPTIVE ADD WITH SELF-HEALING ===
         success, add_res, add_duration = _adaptive_add(
@@ -132,22 +198,36 @@ def run_lifecycle_test(
             )
             continue
 
-        # === SET ===
+        # Extract UID from ADD response for more reliable SET/SHOW/DELETE.
+        # For async tasks (simple-cluster), the UID may be nested in task details.
+        obj_uid = add_res.get("uid", "")
+        if not obj_uid:
+            # Try to extract from async task result
+            tasks = add_res.get("tasks", [])
+            if tasks and isinstance(tasks[0], dict):
+                details = tasks[0].get("task-details", [])
+                if details and isinstance(details[0], dict):
+                    obj_uid = details[0].get("uid", "")
+        obj_ref = {"uid": obj_uid} if obj_uid else {"name": test_id}
+
+        # Some types require a publish before SET/DELETE works
+        # (VPN communities, wildcard, gsn-handover-group, gateways, clusters)
+        if obj_type in _PUBLISH_BETWEEN_STEPS:
+            log.info("  Publishing before SET (required for %s)...", obj_type)
+            client.publish()
+            time.sleep(2)  # Let server commit
+
+        # === SET (with retry) ===
         set_payload = {
-            "name": test_id,
+            **obj_ref,
             "comments": f"QA updated exhaustive variant {i}",
             "color": "orange",
+            "ignore-warnings": True,
+            "ignore-errors": True,
         }
-        log.info("  Executing SET optimization...")
-        t_start = time.perf_counter()
-        set_res = client.run_command(f"set-{obj_type}", set_payload)
-        set_dur = time.perf_counter() - t_start
-        set_success = (
-            "uid" in set_res
-            or set_res.get("code") == "success"
-            or set_res.get("message") == "OK"
+        set_success, set_res, set_dur = _retry_command(
+            client, f"set-{obj_type}", set_payload, label="SET"
         )
-        log.info("  SET: [%.2fs] %s", set_dur, "PASS" if set_success else "FAIL")
 
         results.append(
             {
@@ -165,14 +245,10 @@ def run_lifecycle_test(
         log.info("  Executing SHOW verification...")
         t_start = time.perf_counter()
         show_res = client.run_command(
-            f"show-{obj_type}", {"name": test_id, "details-level": "full"}
+            f"show-{obj_type}", {**obj_ref, "details-level": "full"}
         )
         show_dur = time.perf_counter() - t_start
-        show_success = (
-            "uid" in show_res
-            or show_res.get("code") == "success"
-            or show_res.get("message") == "OK"
-        )
+        show_success = _is_success(show_res)
         log.info("  SHOW: [%.2fs] %s", show_dur, "PASS" if show_success else "FAIL")
 
         results.append(
@@ -180,31 +256,30 @@ def run_lifecycle_test(
                 "type": obj_type,
                 "variant": i,
                 "command": f"show-{obj_type}",
-                "payload": {"name": test_id},
+                "payload": obj_ref,
                 "response": show_res,
                 "success": show_success,
                 "duration": show_dur,
             }
         )
 
-        # === DELETE ===
-        log.info("  Executing DELETE cleanup...")
-        t_start = time.perf_counter()
-        del_res = client.run_command(f"delete-{obj_type}", {"name": test_id})
-        del_dur = time.perf_counter() - t_start
-        del_success = (
-            "uid" in del_res
-            or del_res.get("code") == "success"
-            or del_res.get("message") == "OK"
+        if obj_type in _PUBLISH_BETWEEN_STEPS:
+            log.info("  Publishing before DELETE (required for %s)...", obj_type)
+            client.publish()
+            time.sleep(2)  # Let server commit
+
+        # === DELETE (with retry) ===
+        del_payload = {**obj_ref, "ignore-warnings": True, "ignore-errors": True}
+        del_success, del_res, del_dur = _retry_command(
+            client, f"delete-{obj_type}", del_payload, label="DELETE"
         )
-        log.info("  DELETE: [%.2fs] %s", del_dur, "PASS" if del_success else "FAIL")
 
         results.append(
             {
                 "type": obj_type,
                 "variant": i,
                 "command": f"delete-{obj_type}",
-                "payload": {"name": test_id},
+                "payload": del_payload,
                 "response": del_res,
                 "success": del_success,
                 "duration": del_dur,
@@ -217,7 +292,7 @@ def run_lifecycle_test(
         )
 
     # Clean up helper objects
-    _cleanup_helpers(client, helper_group, helper_except_group, helper_time)
+    _cleanup_helpers(client, helpers)
 
     return True
 
@@ -238,80 +313,156 @@ def _make_test_id(obj_type: str, variant_index: int) -> str:
 
 def _create_helpers(
     client: Any, obj_type: str
-) -> tuple[str | None, str | None, str | None]:
-    """Pre-create helper objects needed by certain types."""
-    helper_group = helper_except_group = helper_time = None
+) -> dict:
+    """Pre-create helper objects needed by certain types.
+
+    Returns:
+        Dict of helper names keyed by role (e.g. ``"group"``, ``"gateway"``).
+    """
+    helpers: dict[str, str | None] = {}
 
     if obj_type == "group-with-exclusion":
-        helper_group = f"QA_HELPER_INCLUDE_{random.randint(1000, 9999)}"
-        helper_except_group = f"QA_HELPER_EXCEPT_{random.randint(1000, 9999)}"
-        res1 = client.run_command("add-group", {"name": helper_group})
-        res2 = client.run_command("add-group", {"name": helper_except_group})
+        helpers["group"] = f"QA_HELPER_INCLUDE_{random.randint(1000, 9999)}"
+        helpers["except_group"] = f"QA_HELPER_EXCEPT_{random.randint(1000, 9999)}"
+        res1 = client.run_command("add-group", {"name": helpers["group"]})
+        res2 = client.run_command("add-group", {"name": helpers["except_group"]})
         if "uid" in res1 and "uid" in res2:
             log.info(
                 "  Created helper groups: include='%s', except='%s'",
-                helper_group,
-                helper_except_group,
+                helpers["group"],
+                helpers["except_group"],
             )
         else:
             log.warning("  Failed to create helper groups")
-            helper_group = helper_except_group = None
+            helpers.clear()
 
     elif obj_type == "time-group":
-        helper_time = f"QA_HT{random.randint(100, 999)}"
+        helpers["time"] = f"QA_HT{random.randint(100, 999)}"
         res = client.run_command(
             "add-time",
-            {"name": helper_time, "start-now": "true", "end-never": "true"},
+            {"name": helpers["time"], "start-now": "true", "end-never": "true"},
         )
         if "uid" in res:
-            log.info("  Created helper time object: '%s'", helper_time)
+            log.info("  Created helper time object: '%s'", helpers["time"])
         else:
             log.warning(
                 "  Failed to create helper time object: %s",
                 res.get("message", res),
             )
-            helper_time = None
+            helpers.clear()
 
-    return helper_group, helper_except_group, helper_time
+    elif obj_type in ("vpn-community-meshed", "vpn-community-star"):
+        rand = random.randint(100, 999)
+        gw_name = f"QA_HELPER_GW_{rand}"
+        interop_name = f"QA_HELPER_INTEROP_{rand}"
+
+        # Create a simple-gateway with VPN enabled
+        gw_res = client.run_command("add-simple-gateway", {
+            "name": gw_name,
+            "ipv4-address": f"10.100.99.{random.randint(10, 200)}",
+            "version": "R81.10",
+            "vpn": True,
+            "ignore-warnings": True,
+            "color": "sky blue",
+            "comments": "QA helper gateway for VPN community test",
+        })
+        if "uid" in gw_res:
+            helpers["gateway"] = gw_name
+            log.info("  Created helper gateway: '%s'", gw_name)
+        else:
+            log.warning(
+                "  Failed to create helper gateway: %s",
+                gw_res.get("message", gw_res),
+            )
+
+        # Create an interoperable device
+        interop_res = client.run_command("add-interoperable-device", {
+            "name": interop_name,
+            "ipv4-address": f"10.100.97.{random.randint(10, 200)}",
+            "ignore-warnings": True,
+            "color": "sky blue",
+            "comments": "QA helper interop device for VPN community test",
+        })
+        if "uid" in interop_res:
+            helpers["interop"] = interop_name
+            log.info("  Created helper interop device: '%s'", interop_name)
+        else:
+            log.warning(
+                "  Failed to create helper interop device: %s",
+                interop_res.get("message", interop_res),
+            )
+
+        # Publish helpers so they are available for VPN community references
+        if helpers.get("gateway") or helpers.get("interop"):
+            client.publish()
+            log.info("  Published VPN helper objects")
+
+    return helpers
 
 
 def _inject_helpers(
     payload: dict,
     obj_type: str,
-    helper_group: str | None,
-    helper_except_group: str | None,
-    helper_time: str | None,
+    helpers: dict,
 ) -> None:
     """Inject helper object references into the payload."""
-    if obj_type == "group-with-exclusion" and helper_group and helper_except_group:
-        payload["include"] = helper_group
-        payload["except"] = helper_except_group
+    if obj_type == "group-with-exclusion" and helpers.get("group") and helpers.get("except_group"):
+        payload["include"] = helpers["group"]
+        payload["except"] = helpers["except_group"]
         log.info(
             "  Injected include='%s', except='%s'",
-            helper_group,
-            helper_except_group,
+            helpers["group"],
+            helpers["except_group"],
         )
-    elif obj_type == "time-group" and helper_time:
-        payload["members"] = [helper_time]
-        log.info("  Injected time member='%s'", helper_time)
+    elif obj_type == "time-group" and helpers.get("time"):
+        payload["members"] = [helpers["time"]]
+        log.info("  Injected time member='%s'", helpers["time"])
+    elif obj_type == "vpn-community-meshed" and helpers.get("gateway"):
+        gateways = []
+        if helpers.get("gateway"):
+            gateways.append(helpers["gateway"])
+        if helpers.get("interop"):
+            gateways.append(helpers["interop"])
+        payload["gateways"] = gateways
+        log.info("  Injected meshed gateways: %s", gateways)
+    elif obj_type == "vpn-community-star" and helpers.get("gateway"):
+        payload["center-gateways"] = [helpers["gateway"]]
+        satellites = []
+        if helpers.get("interop"):
+            satellites.append(helpers["interop"])
+        payload["satellite-gateways"] = satellites
+        log.info(
+            "  Injected star center='%s', satellites=%s",
+            helpers["gateway"],
+            satellites,
+        )
 
 
-def _cleanup_helpers(
-    client: Any,
-    helper_group: str | None,
-    helper_except_group: str | None,
-    helper_time: str | None,
-) -> None:
+def _cleanup_helpers(client: Any, helpers: dict) -> None:
     """Delete helper objects created during the test."""
-    if helper_group:
-        client.run_command("delete-group", {"name": helper_group})
-        log.info("  Cleaned up helper group '%s'", helper_group)
-    if helper_except_group:
-        client.run_command("delete-group", {"name": helper_except_group})
-        log.info("  Cleaned up helper group '%s'", helper_except_group)
-    if helper_time:
-        client.run_command("delete-time", {"name": helper_time})
-        log.info("  Cleaned up helper time '%s'", helper_time)
+    if helpers.get("group"):
+        client.run_command("delete-group", {"name": helpers["group"]})
+        log.info("  Cleaned up helper group '%s'", helpers["group"])
+    if helpers.get("except_group"):
+        client.run_command("delete-group", {"name": helpers["except_group"]})
+        log.info("  Cleaned up helper group '%s'", helpers["except_group"])
+    if helpers.get("time"):
+        client.run_command("delete-time", {"name": helpers["time"]})
+        log.info("  Cleaned up helper time '%s'", helpers["time"])
+    if helpers.get("gateway"):
+        client.run_command(
+            "delete-simple-gateway",
+            {"name": helpers["gateway"], "ignore-warnings": True},
+        )
+        log.info("  Cleaned up helper gateway '%s'", helpers["gateway"])
+    if helpers.get("interop"):
+        client.run_command(
+            "delete-interoperable-device",
+            {"name": helpers["interop"], "ignore-warnings": True},
+        )
+        log.info("  Cleaned up helper interop device '%s'", helpers["interop"])
+    if helpers:
+        client.publish()
 
 
 def _adaptive_add(
@@ -376,7 +527,7 @@ def _adaptive_add(
 def _poll_async_task(
     client: Any, task_id: str
 ) -> tuple[bool, dict]:
-    """Poll an async task until completion (up to ~60 s).
+    """Poll an async task until completion (up to ~120 s).
 
     Returns:
         ``(success, response_dict)``
@@ -384,7 +535,7 @@ def _poll_async_task(
     import time as _time
 
     log.info("  Async task %s — waiting for completion...", task_id)
-    for _ in range(30):
+    for _ in range(60):
         _time.sleep(2)
         task_res = client.run_command(
             "show-task", {"task-id": task_id, "details-level": "full"}
@@ -395,10 +546,11 @@ def _poll_async_task(
             if status == "succeeded":
                 return True, task_res
             if status in ("failed", "partially succeeded"):
+                detail = tasks[0].get("task-details", [{}])[0]
                 desc = (
-                    tasks[0]
-                    .get("task-details", [{}])[0]
-                    .get("statusDescription", status)
+                    detail.get("statusDescription", "")
+                    or detail.get("request-status-description", "")
+                    or status
                 )
                 return False, {"message": desc}
 

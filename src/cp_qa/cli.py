@@ -341,8 +341,28 @@ def _dry_run_payloads(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def load_env_file(path: str) -> None:
+    """Load key=value pairs from a file into os.environ."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ[key.strip()] = value.strip()
+        log.info("Loaded environment variables from %s", path)
+    except Exception as e:
+        log.warning("Failed to load .env file: %s", e)
+
 def main() -> None:
     """Parse arguments and run the requested mode."""
+    # Load .env if it exists
+    load_env_file(".env")
+
     parser = argparse.ArgumentParser(
         prog="cp-qa",
         description="Check Point API QA Tool (v%(prog)s) — "
@@ -362,13 +382,14 @@ def main() -> None:
     conn = parser.add_argument_group("Connection")
     conn.add_argument(
         "-m", "--management",
-        required=True,
-        help="Management Server IP or hostname",
+        required=not os.environ.get("CP_MGMT_SERVER"),
+        default=os.environ.get("CP_MGMT_SERVER"),
+        help="Management Server IP or hostname (or set CP_MGMT_SERVER)",
     )
     conn.add_argument(
         "-u", "--user",
-        default="admin",
-        help="Username (default: admin)",
+        default=os.environ.get("CP_MGMT_USER", "admin"),
+        help="Username (default: admin, or set CP_MGMT_USER)",
     )
     conn.add_argument(
         "-p", "--password",
@@ -439,7 +460,7 @@ def main() -> None:
     # Configure logging before anything else
     configure_logging(debug=args.debug, quiet=args.quiet)
 
-    password = args.password or (
+    password = args.password or os.environ.get("CP_MGMT_PASSWORD") or (
         None if (args.api_key or args.dry_run) else getpass.getpass(f"Password for {args.user}: ")
     )
 
@@ -463,6 +484,11 @@ def main() -> None:
         api_key=args.api_key, domain=args.domain,
     )
 
+    # Determine spec URL: prioritize server-fetched after login
+    local_spec = os.path.join(os.getcwd(), "openapi.json")
+    
+    # 1. Login (if not dry-run)
+    api_version = "2.1" # Default fallback
     if not args.dry_run:
         sid, api_version = client.login()
         log.info(
@@ -470,24 +496,26 @@ def main() -> None:
             args.management,
             api_version,
         )
+        
         dynamic_spec_url = (
             f"https://sc1.checkpoint.com/documents/latest/APIs/"
             f"data/v{api_version}/dynamic/apis.json"
         )
+        log.info("Using dynamic spec URL: %s", dynamic_spec_url)
     else:
-        # Dry-run uses default spec URL (no login needed, but we still
-        # need a spec to generate payloads)
-        from cp_qa.constants import API_SPEC_URL
+        # Dry-run uses local spec if available, otherwise default URL
+        if os.path.exists(local_spec):
+            dynamic_spec_url = f"file:///{local_spec.replace(os.sep, '/')}"
+            log.info("[DRY-RUN] Using local openapi.json: %s", dynamic_spec_url)
+        else:
+            dynamic_spec_url = API_SPEC_URL
+            log.info("[DRY-RUN] Using default spec URL: %s", dynamic_spec_url)
 
-        dynamic_spec_url = API_SPEC_URL
-        api_version = "2.1"
-        log.info("[DRY-RUN] Using default spec URL: %s", dynamic_spec_url)
-
-    log.info("Using dynamic spec URL: %s", dynamic_spec_url)
+    log.info("Final spec URL in use: %s", dynamic_spec_url)
 
     try:
         # 2. Initialise QA engine
-        engine = APIQAEngine(client, dynamic_spec_url)
+        engine = APIQAEngine(client, dynamic_spec_url, api_version=api_version)
         if not engine.fetch_spec():
             return
 
@@ -525,6 +553,12 @@ def main() -> None:
 
     finally:
         if not args.dry_run:
+            # Always discard pending changes before logout to avoid
+            # leaving orphan sessions with uncommitted state.
+            try:
+                client.run_command("discard", {})
+            except Exception:
+                pass
             client.logout()
 
 
