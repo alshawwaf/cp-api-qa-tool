@@ -33,6 +33,7 @@ import shutil
 from cp_qa import __version__
 from cp_qa.client import APIClient
 from cp_qa.constants import (
+    API_SPEC_URL,
     MANIFEST_PATH,
     NETWORK_OBJECTS_TYPES,
     QA_EXAMPLES_DIR,
@@ -360,8 +361,11 @@ def load_env_file(path: str) -> None:
 
 def main() -> None:
     """Parse arguments and run the requested mode."""
-    # Load .env if it exists
-    load_env_file(".env")
+    # Load .env if it exists (check config/ first, then root)
+    if os.path.exists("config/.env"):
+        load_env_file("config/.env")
+    else:
+        load_env_file(".env")
 
     parser = argparse.ArgumentParser(
         prog="cp-qa",
@@ -485,7 +489,9 @@ def main() -> None:
     )
 
     # Determine spec URL: prioritize server-fetched after login
-    local_spec = os.path.join(os.getcwd(), "openapi.json")
+    local_spec = os.path.join(os.getcwd(), "config", "openapi.json")
+    if not os.path.exists(local_spec):
+        local_spec = os.path.join(os.getcwd(), "openapi.json")
     
     # 1. Login (if not dry-run)
     api_version = "2.1" # Default fallback
