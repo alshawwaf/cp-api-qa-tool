@@ -13,6 +13,36 @@ A self-healing QA engine that validates Check Point Management API objects throu
 - **Example Export** — Outputs clean, standalone JSON payloads for every tested variant, ready to copy-paste into scripts or Ansible playbooks.
 - **Debug Options** — `--debug` for verbose console output, `--dry-run` to inspect generated payloads without calling the API.
 
+<details>
+<summary><b>What is Self-Healing? (Click to expand)</b></summary>
+
+In the context of the **Check Point API QA Tool**, "self-healing" refers to the tool's ability to automatically detect, analyze, and resolve API validation errors during the object creation process without requiring user intervention.
+
+Instead of simply failing when the Management Server returns an error, the engine uses an **adaptive feedback loop** to "fix" the request on the fly.
+
+### How it Works (The Technical Logic)
+
+The core logic resides in `src/cp_qa/engine/autofix.py` and `lifecycle.py`. Here is the step-by-step flow:
+
+1.  **Initial Attempt**: The tool sends a comprehensive "Full" payload to the API (e.g., `add-host`).
+2.  **Error Analysis**: If the API returns an error (like `Invalid parameter` or `Missing mask definition`), the tool captures the exact error text.
+3.  **Pattern Matching**: The `auto_fix_payload` function runs a battery of regex and string checks against that error.
+4.  **In-Place Correction**: If a known issue is identified, the tool modifies the JSON payload in memory to resolve the conflict.
+5.  **Re-Try**: The tool immediately retries the corrected payload. This loop repeats up to **5 times** (`MAX_RETRIES`) per object.
+
+### Real-World Examples
+
+During deployment, the self-healing engine handles several complex scenarios:
+
+*   **Co-requisite Fields**: Automatically injecting a default `mask-length` (e.g., 24 for IPv4) if the server complains it's missing.
+*   **Parameter Sanitization**: Stripping platform-unsupported fields (like `visitor-mode-interface`) that are found in the specification but rejected by specific server versions.
+*   **VPN Protocol Logic**: Catching validation failures and forcing required settings like `encryption-suite: custom` when IKE parameters are present.
+*   **IP Ambiguity**: Automatically dropping redundant generic `ip-address` fields if they conflict with versioned `ipv4-address` fields.
+
+### Why It Matters
+Check Point API requirements can vary significantly between R80.x, R81.x, and R82. The self-healing engine allows the tool to be **version-agnostic**—it adaptiveley discovers what the specific server requires and adjusts its payloads to match.
+</details>
+
 ## Supported Object Types (21)
 
 | Category | Types |
@@ -156,32 +186,12 @@ cp-api-qa-tool/
 │           ├── lifecycle.py        # CRUD lifecycle test execution
 │           ├── reports.py          # JSON/Markdown/example export
 │           └── demo.py             # Demo create/cleanup/services/policy
-├── scripts/                        # Standalone diagnostic utilities
-│   ├── diagnose_fields.py          # Inspect raw field schema for any API object
-│   ├── clean_deploy.py             # Direct deploy script (bypasses engine)
-│   └── demo_diagnostic.py          # Step-by-step diagnostic for publish issues
+├── config/                         # Configuration & credentials (.env)
 └── tests/                          # Placeholder for future tests
     └── __init__.py
 ```
 
-## Diagnostic Scripts
-
-Located in `scripts/` — standalone utilities for debugging and inspection:
-
-```bash
-# Inspect the raw field schema for any API object type
-python scripts/diagnose_fields.py HostRequestNew
-python scripts/diagnose_fields.py NetworkRequestNew --spec-url <url>
-python scripts/diagnose_fields.py --list  # List all object names
-
-# Direct deploy script (bypasses the main engine)
-python scripts/clean_deploy.py -m <MGMT_IP> -u admin
-
-# Step-by-step diagnostic for publish issues
-python scripts/demo_diagnostic.py -m <MGMT_IP> -u admin
-```
-
-Credentials can also be passed via environment variables: `CP_MGMT_SERVER`, `CP_MGMT_USER`, `CP_MGMT_PASSWORD`.
+Credentials can also be passed via environment variables: `CP_MGMT_SERVER`, `CP_MGMT_USER`, `CP_MGMT_PASSWORD` (stored in `config/.env`).
 
 ## Development
 
