@@ -8,7 +8,7 @@ A self-healing QA engine that validates Check Point Management API objects throu
 - **Full CRUD Lifecycle** — Every object type is tested through `add` -> `set` -> `show` -> `delete`, verifying the complete roundtrip.
 - **Demo Mode** — Create all object types at once for policy building, then clean up with a single command.
 - **Variant Coverage** — Automatically detects mutually exclusive field-alternatives (e.g. `ipv4-address` vs `ipv6-address`) and generates a variant for each to cover 100% of the API surface.
-- **Dynamic Versioning** — Detects the Management Server's API version at login and fetches the matching specification (v1.x / v2.x).
+- **Dynamic Versioning** — Automatically detects the Management Server's version at login (e.g., R81.20 vs R82) and fetches the matching **v2.x** or **v1.x** dynamic specification from `sc1.checkpoint.com` to ensure schema accuracy.
 - **Professional Reporting** — Generates a Markdown audit report with per-variant timing, a summary table, and distinguishing field labels.
 - **Example Export** — Outputs clean, standalone JSON payloads for every tested variant, ready to copy-paste into scripts or Ansible playbooks.
 - **Debug Options** — `--debug` for verbose console output, `--dry-run` to inspect generated payloads without calling the API.
