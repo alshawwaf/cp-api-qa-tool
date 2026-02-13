@@ -453,11 +453,23 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         return []
 
     log.info("  PASS Policy package: %s", pkg_name)
+    
+    # Ensure package is published so layers are fully initialized
+    client.publish()
+    
+    # Extract the actual access layer name from the created package
+    # Check Point usually creates 'PackageName Network' but we should be sure.
+    access_layers = res.get("access-layers", [])
+    if access_layers and isinstance(access_layers, list):
+        layer_name = access_layers[0].get("name", f"{pkg_name} Network")
+    else:
+        layer_name = f"{pkg_name} Network"
+        
+    log.info("  Using access layer: %s", layer_name)
+
     manifest_entries = [
         {"type": "package", "name": pkg_name, "uid": res["uid"], "payload": {}}
     ]
-
-    layer_name = f"{pkg_name} Network"
 
     # Build lookup: type -> first object name
     obj_lookup: dict[str, str] = {}

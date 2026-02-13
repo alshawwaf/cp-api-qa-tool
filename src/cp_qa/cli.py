@@ -69,11 +69,17 @@ def _resolve_target_types(
     cmds = engine.get_commands_by_section(section)
     target_types: list[tuple[str, dict]] = []
 
-    if not cmds and section.lower() == "network objects":
-        log.info(
-            "Section metadata missing in spec, using manual mapping "
-            "for 'Network Objects'"
-        )
+    is_all = section.lower() == "all"
+    
+    if is_all or (not cmds and section.lower() == "network objects"):
+        if not is_all:
+            log.info(
+                "Section metadata missing in spec, using manual mapping "
+                "for 'Network Objects'"
+            )
+        else:
+            log.info("Targeting ALL supported object types across all sections")
+            
         for obj_type in NETWORK_OBJECTS_TYPES:
             for cmd in engine.spec.get("commands", []):
                 if cmd.get("name", {}).get("web") == f"add-{obj_type}":
@@ -414,8 +420,8 @@ def main() -> None:
     mode_grp = parser.add_argument_group("Mode")
     mode_grp.add_argument(
         "-s", "--section",
-        default="Network Objects",
-        help="API section to test (default: 'Network Objects')",
+        default=None,
+        help="API section to test (e.g. 'Network Objects', 'Services', or 'all')",
     )
     mode_grp.add_argument(
         "--mode",
@@ -526,8 +532,13 @@ def main() -> None:
             return
 
         # 3. Resolve target object types
-        log.info("Targeting section: %s", args.section)
-        target_types = _resolve_target_types(engine, args.section)
+        section = args.section
+        if not section:
+            # Default: 'all' for demo mode, 'Network Objects' for QA mode
+            section = "all" if args.mode == "demo" else "Network Objects"
+            
+        log.info("Targeting section: %s", section)
+        target_types = _resolve_target_types(engine, section)
 
         if args.type:
             target_types = [t for t in target_types if t[0] == args.type]
