@@ -478,7 +478,7 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         if entry.get("uid") and t not in obj_lookup:
             obj_lookup[t] = entry["name"]
 
-    def obj(type_name: str, fallback: str = "Any") -> str:
+    def obj(type_name: str, fallback: str = "any") -> str:
         return obj_lookup.get(type_name, fallback)
 
     # Check Point recommended access rules
@@ -494,9 +494,9 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         },
         {
             "name": "Stealth Rule",
-            "source": "Any",
+            "source": "any",
             "destination": obj("simple-gateway"),
-            "service": "Any",
+            "service": "any",
             "action": "Drop",
             "track": {"type": "Log"},
             "comments": "Block direct access to gateway — CP Best Practice",
@@ -504,7 +504,7 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         {
             "name": "DNS Resolution",
             "source": obj("group"),
-            "destination": obj("dns-domain", "Any"),
+            "destination": obj("dns-domain", "any"),
             "service": "DEMO_SVC_DNS",
             "action": "Accept",
             "track": {"type": "Log"},
@@ -513,7 +513,7 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         {
             "name": "Outbound Web Access",
             "source": obj("network"),
-            "destination": "Any",
+            "destination": "any",
             "service": "DEMO_SVC_WEB_GROUP",
             "action": "Accept",
             "track": {"type": "Log"},
@@ -521,7 +521,7 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         },
         {
             "name": "Inbound Web Services",
-            "source": "Any",
+            "source": "any",
             "destination": obj("host"),
             "service": ["DEMO_SVC_HTTP", "DEMO_SVC_HTTPS"],
             "action": "Accept",
@@ -532,7 +532,7 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
             "name": "Internal Network Access",
             "source": obj("address-range"),
             "destination": obj("network"),
-            "service": "Any",
+            "service": "any",
             "action": "Accept",
             "track": {"type": "Log"},
             "comments": "Allow internal address range communication",
@@ -541,7 +541,7 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
             "name": "Zone-Based Access",
             "source": obj("security-zone"),
             "destination": obj("wildcard"),
-            "service": "Any",
+            "service": "any",
             "action": "Accept",
             "track": {"type": "Log"},
             "comments": "Zone-based firewall policy",
@@ -558,8 +558,8 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         {
             "name": "Exclusion Group Block",
             "source": obj("group-with-exclusion"),
-            "destination": "Any",
-            "service": "Any",
+            "destination": "any",
+            "service": "any",
             "action": "Drop",
             "track": {"type": "Log"},
             "comments": "Block traffic from excluded group members",
@@ -568,7 +568,7 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
             "name": "VPN Interop Access",
             "source": obj("interoperable-device"),
             "destination": obj("network"),
-            "service": "Any",
+            "service": "any",
             "action": "Accept",
             "track": {"type": "Log"},
             "comments": "VPN interoperability traffic",
@@ -576,15 +576,15 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         {
             "name": "Threat Feed Block",
             "source": obj("network-feed"),
-            "destination": "Any",
-            "service": "Any",
+            "destination": "any",
+            "service": "any",
             "action": "Drop",
             "track": {"type": "Log"},
             "comments": "Block known malicious IPs (TOR exit nodes)",
         },
         {
             "name": "Time-Restricted SSH",
-            "source": "Any",
+            "source": "any",
             "destination": obj("host"),
             "service": "DEMO_SVC_SSH",
             "action": "Accept",
@@ -594,18 +594,18 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
         },
         {
             "name": "Multicast Traffic",
-            "source": "Any",
+            "source": "any",
             "destination": obj("multicast-address-range"),
-            "service": "Any",
+            "service": "any",
             "action": "Accept",
             "track": {"type": "Log"},
             "comments": "Allow multicast traffic",
         },
         {
             "name": "Cleanup Rule",
-            "source": "Any",
-            "destination": "Any",
-            "service": "Any",
+            "source": "any",
+            "destination": "any",
+            "service": "any",
             "action": "Drop",
             "track": {"type": "Log"},
             "comments": "Drop and log all unmatched traffic — CP Best Practice",

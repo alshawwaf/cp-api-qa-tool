@@ -28,6 +28,188 @@ _BOILERPLATE = {
 
 
 # ---------------------------------------------------------------------------
+# Schema alignment table
+# ---------------------------------------------------------------------------
+
+def _gen_schema_table(
+    title: str,
+    actual_data: dict,
+    schema_dict: dict | None,
+    is_request: bool = True,
+) -> list[str]:
+    """Generate an HTML table comparing actual payload against API schema.
+
+    Columns: Field | Actual Value | Type | Req? | Schema Description
+    Rows are grouped: required fields first, then utilized optional,
+    then unused schema fields, then extra fields not in schema.
+    A coverage summary line is shown above the table.
+    """
+    schema = schema_dict or {}
+
+    # Coverage statistics
+    schema_keys = set(schema.keys())
+    actual_keys = set(actual_data.keys())
+    utilized = schema_keys & actual_keys
+    not_used = schema_keys - actual_keys
+    extra = actual_keys - schema_keys
+    pct = (len(utilized) / len(schema_keys) * 100) if schema_keys else 0
+
+    label = "sent" if is_request else "returned"
+    lines: list[str] = [
+        f"**{title}**",
+        "",
+        f"> **Coverage:** {len(utilized)}/{len(schema_keys)} schema fields "
+        f"{label} ({pct:.0f}%)  ",
+        f"> Utilized: **{len(utilized)}** &nbsp;|&nbsp; "
+        f"Not {label}: **{len(not_used)}** &nbsp;|&nbsp; "
+        f"Extra (not in schema): **{len(extra)}**",
+        "",
+    ]
+
+    if not schema and not actual_data:
+        lines.append("*No data available.*")
+        return lines
+
+    # Sort: required+sent → required+unsent → optional+sent → optional+unsent → extra
+    def _sort_key(k: str) -> tuple:
+        sch = schema.get(k)
+        req = sch.get("required", False) if sch else False
+        in_sch = k in schema
+        in_act = k in actual_data
+        return (
+            0 if req else 1,
+            0 if in_act else 1,
+            0 if in_sch else 1,
+            k,
+        )
+
+    all_keys = sorted(schema_keys | actual_keys, key=_sort_key)
+
+    lines += [
+        '<div style="overflow-x:auto; margin-bottom:20px;">',
+        '<table style="width:100%; border-collapse:collapse; font-family:monospace; font-size:12px; border:1px solid #444;">',
+        '  <thead>',
+        '    <tr style="background:#2d2d2d; color:#f0f0f0;">',
+        '      <th style="padding:8px; border:1px solid #555; width:4%;"></th>',
+        '      <th style="padding:8px; border:1px solid #555; width:20%;">Field</th>',
+        '      <th style="padding:8px; border:1px solid #555; width:30%;">Actual Value</th>',
+        '      <th style="padding:8px; border:1px solid #555; width:8%;">Type</th>',
+        '      <th style="padding:8px; border:1px solid #555; width:6%;">Req</th>',
+        '      <th style="padding:8px; border:1px solid #555; width:32%;">Schema Description</th>',
+        '    </tr>',
+        '  </thead>',
+        '  <tbody>',
+    ]
+
+    for k in all_keys:
+        in_act = k in actual_data
+        in_sch = k in schema
+        sch = schema.get(k, {})
+
+        # Row colour: green = utilized, grey = unused schema, yellow = extra
+        if in_act and in_sch:
+            bg = "#f0fff0"
+        elif in_sch:
+            bg = "#f8f8f8"
+        else:
+            bg = "#fffff0"
+
+        # Actual value cell
+        if in_act:
+            v = json.dumps(actual_data[k], ensure_ascii=False)
+            if len(v) > 120:
+                v = v[:120] + "\u2026"
+            val_html = (
+                f'<code style="background:#e8e8e8; padding:2px 4px; '
+                f'border-radius:3px; word-break:break-all;">{v}</code>'
+            )
+        else:
+            tag = "not sent" if is_request else "absent"
+            val_html = f'<span style="color:#bbb; font-style:italic;">({tag})</span>'
+
+        # Type & required cells
+        if in_sch:
+            type_str = sch.get("type", "?")
+            req = sch.get("required", False)
+            req_html = (
+                '<b style="color:#d9534f;">Yes</b>' if req
+                else '<span style="color:#999;">No</span>'
+            )
+        else:
+            type_str = "\u2014"
+            req_html = '<span style="color:#888;">\u2014</span>'
+
+        # Description cell — includes valid-values when present
+        desc_parts: list[str] = []
+        if in_sch:
+            raw_desc = sch.get("description", "")
+            if len(raw_desc) > 120:
+                raw_desc = raw_desc[:120] + "\u2026"
+            if raw_desc:
+                desc_parts.append(raw_desc)
+
+            vv = sch.get("valid-values")
+            if vv:
+                # Check if the sent value is valid
+                invalid_flag = ""
+                if in_act:
+                    sent = actual_data[k]
+                    if isinstance(sent, str) and sent not in vv:
+                        invalid_flag = ' &#x274C; <b style="color:#d9534f;">sent value not in allowed list</b>'
+                vv_str = ", ".join(f"<code>{v}</code>" for v in vv)
+                desc_parts.append(
+                    f'<br/><b>Allowed values ({len(vv)}):</b> {vv_str}{invalid_flag}'
+                )
+            desc = "".join(desc_parts) if desc_parts else ""
+        else:
+            desc = '<span style="color:#888;">(not in schema)</span>'
+
+        # Field name with status indicator
+        if in_act and in_sch:
+            # If there are valid-values and the sent value is not in them, use warning
+            vv = sch.get("valid-values")
+            if vv and isinstance(actual_data.get(k), str) and actual_data[k] not in vv:
+                indicator = "&#x274C;"
+                bg = "#fff0f0"
+            else:
+                indicator = "&#x2705;"
+        elif in_sch:
+            indicator = "&#x25CB;"
+        else:
+            indicator = "&#x26A0;"
+
+        lines.append(f'    <tr style="background:{bg};">')
+        lines.append(
+            f'      <td style="padding:6px 8px; border:1px solid #ddd; '
+            f'vertical-align:top; text-align:center;">{indicator}</td>'
+        )
+        lines.append(
+            f'      <td style="padding:6px 8px; border:1px solid #ddd; '
+            f'vertical-align:top;"><b>{k}</b></td>'
+        )
+        lines.append(
+            f'      <td style="padding:6px 8px; border:1px solid #ddd; '
+            f'vertical-align:top;">{val_html}</td>'
+        )
+        lines.append(
+            f'      <td style="padding:6px 8px; border:1px solid #ddd; '
+            f'vertical-align:top; color:#555;">{type_str}</td>'
+        )
+        lines.append(
+            f'      <td style="padding:6px 8px; border:1px solid #ddd; '
+            f'vertical-align:top; text-align:center;">{req_html}</td>'
+        )
+        lines.append(
+            f'      <td style="padding:6px 8px; border:1px solid #ddd; '
+            f'vertical-align:top; font-size:11px; color:#555;"><i>{desc}</i></td>'
+        )
+        lines.append('    </tr>')
+
+    lines += ['  </tbody>', '</table>', '</div>', ""]
+    return lines
+
+
+# ---------------------------------------------------------------------------
 # JSON raw data
 # ---------------------------------------------------------------------------
 
@@ -173,15 +355,30 @@ def export_markdown_report(results: list[dict], file_path: str, *, api_version: 
         lines += [
             f"#### {status_label} `{command}` ([{duration:.2f}s])",
             "",
-            "**Payload snapshot:**",
-            "```json",
-            json.dumps(payload, indent=2),
-            "```",
-            "**Full Response:**",
-            "```json",
-            json.dumps(response, indent=2),
-            "```",
         ]
+
+        # Schema alignment table for ADD commands; plain JSON for others
+        req_schema = res.get("request_schema")
+        res_schema = res.get("response_schema")
+
+        if command.startswith("add-") and req_schema:
+            lines += _gen_schema_table(
+                "Audit: Request vs. API Schema", payload, req_schema, is_request=True,
+            )
+            lines += _gen_schema_table(
+                "Audit: Response vs. API Schema", response, res_schema, is_request=False,
+            )
+        else:
+            lines += [
+                "**Payload snapshot:**",
+                "```json",
+                json.dumps(payload, indent=2),
+                "```",
+                "**Full Response:**",
+                "```json",
+                json.dumps(response, indent=2),
+                "```",
+            ]
 
         if not success:
             errs = response.get("blocking-errors", response.get("errors", []))
@@ -442,16 +639,30 @@ def _write_per_type_markdown(
         lines += [
             f"#### [{status_label}] `{command}` ({duration:.2f}s)",
             "",
-            "**Payload:**",
-            "```json",
-            json.dumps(payload, indent=2),
-            "```",
-            "",
-            "**Response:**",
-            "```json",
-            json.dumps(response, indent=2),
-            "```",
         ]
+
+        req_schema = res.get("request_schema")
+        res_schema = res.get("response_schema")
+
+        if command.startswith("add-") and req_schema:
+            lines += _gen_schema_table(
+                "Audit: Request vs. API Schema", payload, req_schema, is_request=True,
+            )
+            lines += _gen_schema_table(
+                "Audit: Response vs. API Schema", response, res_schema, is_request=False,
+            )
+        else:
+            lines += [
+                "**Payload:**",
+                "```json",
+                json.dumps(payload, indent=2),
+                "```",
+                "",
+                "**Response:**",
+                "```json",
+                json.dumps(response, indent=2),
+                "```",
+            ]
 
         if not success:
             errs = response.get("blocking-errors", response.get("errors", []))

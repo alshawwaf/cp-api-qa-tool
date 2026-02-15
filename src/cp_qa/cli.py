@@ -499,38 +499,41 @@ def main() -> None:
     if not os.path.exists(local_spec):
         local_spec = os.path.join(os.getcwd(), "openapi.json")
     
-    # 1. Login (if not dry-run)
-    api_version = "2.1" # Default fallback
+    # 1. Login (if not dry-run) / Spec Fetching
+    api_version = "2.0"
+    engine: APIQAEngine | None = None
+    
     if not args.dry_run:
         sid, api_version = client.login()
-        log.info(
-            "Authenticated to %s (Detected API Version: %s)",
-            args.management,
-            api_version,
-        )
+        log.info("Authenticated to %s (Detected API Version: %s)", args.management, api_version)
         
-        dynamic_spec_url = (
-            f"https://sc1.checkpoint.com/documents/latest/APIs/"
-            f"data/v{api_version}/dynamic/apis.json"
-        )
-        log.info("Using dynamic spec URL: %s", dynamic_spec_url)
+        # Use documentation reconstruction (static + dynamic) if possible
+        spec_url_base = f"https://sc1.checkpoint.com/documents/latest/APIs/data/v{api_version}/"
+        engine = APIQAEngine(client, spec_url_base, api_version=api_version)
+        engine.spec = engine.reconstruct_full_spec(spec_url_base, api_version)
+        
+        if not engine.spec:
+             log.warning("Falling back to server-provided dynamic spec.")
+             dynamic_spec_url = f"https://{args.management}/web_api/v{api_version}/apis.json"
+             engine.spec_url = dynamic_spec_url
+             if not engine.fetch_spec():
+                 log.error("Failed to fetch API spec from server.")
+                 return
+        log.info("Final spec URL in use: %s", engine.spec_url)
     else:
         # Dry-run uses local spec if available, otherwise default URL
         if os.path.exists(local_spec):
-            dynamic_spec_url = f"file:///{local_spec.replace(os.sep, '/')}"
-            log.info("[DRY-RUN] Using local openapi.json: %s", dynamic_spec_url)
+            spec_url = f"file:///{local_spec.replace(os.sep, '/')}"
+            log.info("[DRY-RUN] Using local openapi.json: %s", spec_url)
         else:
-            dynamic_spec_url = API_SPEC_URL
-            log.info("[DRY-RUN] Using default spec URL: %s", dynamic_spec_url)
-
-    log.info("Final spec URL in use: %s", dynamic_spec_url)
-
-    try:
-        # 2. Initialise QA engine
-        engine = APIQAEngine(client, dynamic_spec_url, api_version=api_version)
+            spec_url = API_SPEC_URL
+            log.info("[DRY-RUN] Using default spec URL: %s", spec_url)
+        
+        engine = APIQAEngine(client, spec_url, api_version=api_version)
         if not engine.fetch_spec():
             return
 
+    try:
         # 3. Resolve target object types
         section = args.section
         if not section:

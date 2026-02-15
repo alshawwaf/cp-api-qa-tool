@@ -16,13 +16,14 @@ from cp_qa.logging import get_logger
 log = get_logger(__name__)
 
 
-def fetch_spec(spec_url: str) -> dict | None:
+def fetch_spec(spec_url: str, headers: dict | None = None) -> dict | None:
     """Download and parse the API specification JSON.
 
     Supports both legacy apis.json and new OpenAPI 3.0 (openapi.json) formats.
 
     Args:
         spec_url: URL to the spec file (can be file:///... or https://...).
+        headers: Optional dictionary of HTTP headers (e.g. for authentication).
 
     Returns:
         Parsed specification dictionary in the internal apis.json format.
@@ -39,7 +40,7 @@ def fetch_spec(spec_url: str) -> dict | None:
             with open(path, "r", encoding="utf-8") as f:
                 spec = json.load(f)
         else:
-            response = requests.get(spec_url, verify=False, timeout=30)
+            response = requests.get(spec_url, verify=False, timeout=30, headers=headers)
             response.raise_for_status()
             spec = response.json()
 
@@ -57,6 +58,105 @@ def fetch_spec(spec_url: str) -> dict | None:
     except Exception as exc:
         log.error("Failed to fetch API spec: %s", exc)
         return None
+
+
+def reconstruct_full_spec(base_url: str, version: str) -> dict | None:
+    """Reconstruct the full API spec by merging dynamic, static, and content files.
+    
+    This follows the methodology of cp-docs-to-swagger to bridge the gap
+    between server-filtered specs and public documentation.
+    """
+    v_full = f"v{version}" if not version.startswith("v") else version
+    parts = v_full.replace("v", "").split(".")
+    v_short = f"v{parts[0]}.{parts[1]}" if len(parts) >= 2 else f"v{parts[0]}"
+    
+    # Tier 1 & 2: SC1 Paths
+    variations = [v_full, v_short]
+    
+    log.info("--- Reconstruction: Aggregating Documentation Sources ---")
+    
+    dynamic_spec = None
+    static_spec = None
+    content_data = None
+    
+    for v in variations:
+        data_url = f"https://sc1.checkpoint.com/documents/latest/APIs/data/{v}/"
+        log.info("Trying SC1 path: %s", data_url)
+        
+        dynamic_url = f"{data_url}dynamic/apis.json"
+        dynamic_spec = fetch_spec(dynamic_url)
+        if dynamic_spec:
+             static_url = f"{data_url}static_content/apis.json"
+             content_url = f"{data_url}dynamic/content.json"
+             static_spec = fetch_spec(static_url)
+             content_data = fetch_spec(content_url)
+             break
+
+    # Tier 3: Swagger Proxy (Pre-reconstructed / Processed)
+    if not dynamic_spec:
+        log.warning("SC1 paths failed. Trying swagger.ai.alshawwaf.ca as documentation source...")
+        swagger_url = f"https://swagger.ai.alshawwaf.ca/openapi.json?api_type=management&api_version={v_full}"
+        dynamic_spec = fetch_spec(swagger_url)
+        if dynamic_spec:
+            log.info("Successfully loaded pre-processed spec from swagger proxy.")
+            return dynamic_spec
+
+    if not dynamic_spec:
+        log.error("Reconstruction failed: All documentation sources are unreachable.")
+        return None
+
+    # 2. Map static objects for fast lookup
+    static_objects = {obj["name"]: obj for obj in static_spec.get("objects", [])} if static_spec else {}
+    
+    # 3. Merge Objects: Overlay static details (descriptions/types) onto dynamic schemas
+    for dyn_obj in dynamic_spec.get("objects", []):
+        name = dyn_obj["name"]
+        if name in static_objects:
+            _merge_object_fields(dyn_obj, static_objects[name])
+            
+    # 4. Add missing static-only objects
+    dyn_obj_names = {obj["name"] for obj in dynamic_spec.get("objects", [])}
+    for name, st_obj in static_objects.items():
+        if name not in dyn_obj_names:
+            dynamic_spec["objects"].append(st_obj)
+            
+    # 5. Hierarchy Enrichment
+    if content_data and "commands" in content_data:
+        _enrich_groups_from_content(dynamic_spec, content_data)
+
+    log.info("Reconstruction COMPLETE. Total Objects: %d", len(dynamic_spec["objects"]))
+    return dynamic_spec
+
+
+def _merge_object_fields(target: dict, source: dict):
+    """Merge field definitions from source into target, preferring source for metadata."""
+    target_fields = {f["name"]: f for f in target.get("fields", [])}
+    
+    # Check all 3 potential field lists in source
+    for section in ["fields", "required-fields", "under-more-fields"]:
+        for sf in source.get(section, []):
+            fname = sf.get("name")
+            if not fname: continue
+            
+            if fname in target_fields:
+                # Update existing field with better documentation/types if available
+                tf = target_fields[fname]
+                if sf.get("description"): tf["description"] = sf["description"]
+                if sf.get("field-alternatives"): tf["field-alternatives"] = sf["field-alternatives"]
+                # etc.
+            else:
+                # Add "hidden" fields (under-more-fields etc.) to the primary list
+                target["fields"].append(sf)
+
+
+def _enrich_groups_from_content(spec: dict, content: dict):
+    """Use content hierarchy to assign proper public-facing groups to commands."""
+    content_cmds = {c["name"]["web"]: c for c in content.get("commands", []) if "name" in c and "web" in c["name"]}
+    for d_cmd in spec.get("commands", []):
+        web_name = d_cmd.get("name", {}).get("web")
+        if web_name in content_cmds:
+            # Prefer content hierarchy group (it matches the sidebar)
+            d_cmd["group"] = content_cmds[web_name].get("group", d_cmd["group"])
 
 
 def _convert_openapi_to_apis_json(openapi: dict) -> dict:
@@ -249,3 +349,96 @@ def get_object_by_name(spec: dict, obj_name: str) -> dict | None:
         if obj.get("name") == obj_name:
             return obj
     return None
+
+
+def get_simplified_schema(spec: dict, obj_name: str) -> dict[str, Any] | None:
+    """Return a concise, human-readable summary of an object's schema.
+
+    Processes ``fields``, ``parameters``, ``required-fields``, and
+    ``under-more-fields`` sections.  Handles ``required-fields`` being
+    either a list of field dicts (native apis.json) or a list of field
+    name strings (OpenAPI-converted specs).
+
+    Args:
+        spec:     Parsed API specification dictionary.
+        obj_name: Name of the object schema (request or response).
+
+    Returns:
+        Simplified dictionary mapping field names to
+        ``{type, required, description}``.
+    """
+    obj_def = get_object_by_name(spec, obj_name)
+    if not obj_def:
+        return None
+
+    simplified: dict[str, dict] = {}
+
+    # "required-fields" can be a list of strings (OpenAPI-converted) or
+    # a list of field dicts (native apis.json).  Separate them.
+    required_names: set[str] = set()
+    req_field_dicts: list[dict] = []
+    for item in obj_def.get("required-fields", []):
+        if isinstance(item, str):
+            required_names.add(item)
+        elif isinstance(item, dict):
+            req_field_dicts.append(item)
+            name = item.get("name")
+            if name:
+                required_names.add(name)
+
+    def _process_param_list(params: list[dict]) -> None:
+        for param in params:
+            if not isinstance(param, dict):
+                continue
+            name = param.get("name")
+            if not name:
+                continue
+
+            # Extract type and valid-values from 'types' list
+            type_str = param.get("type")
+            valid_values: list = []
+            types = param.get("types", [])
+            if not type_str and types:
+                type_str = "/".join(t.get("name", "unknown") for t in types)
+            if not type_str:
+                type_str = "unknown"
+            for t in types:
+                vv = t.get("valid-values")
+                if vv:
+                    valid_values = vv
+                    break
+            # Also check top-level allowed-values
+            if not valid_values:
+                valid_values = param.get("allowed-values", [])
+
+            entry: dict[str, Any] = {
+                "type": type_str,
+                "required": (
+                    param.get("mandatory", param.get("required", False))
+                    or name in required_names
+                ),
+                "description": param.get("description", ""),
+            }
+            if valid_values:
+                entry["valid-values"] = valid_values
+            simplified[name] = entry
+
+            # Handle field alternatives (e.g. ipv4-address vs ipv6-address)
+            alts = param.get("field-alternatives", [])
+            if alts:
+                _process_param_list(alts)
+
+    # Process all field sections
+    if "fields" in obj_def:
+        _process_param_list(obj_def["fields"])
+
+    if "parameters" in obj_def:
+        _process_param_list(obj_def["parameters"])
+
+    if req_field_dicts:
+        _process_param_list(req_field_dicts)
+
+    if "under-more-fields" in obj_def:
+        _process_param_list(obj_def["under-more-fields"])
+
+    return simplified

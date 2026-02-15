@@ -19,7 +19,7 @@ from cp_qa.constants import MAX_RETRIES
 from cp_qa.engine.autofix import auto_fix_payload
 from cp_qa.engine.params import extract_params_from_obj
 from cp_qa.engine.payloads import generate_payloads
-from cp_qa.engine.spec import get_object_by_name
+from cp_qa.engine.spec import get_object_by_name, get_simplified_schema
 from cp_qa.engine.type_defaults import apply_type_defaults
 from cp_qa.logging import get_logger
 
@@ -143,6 +143,14 @@ def run_lifecycle_test(
         parameters, current_obj_type=current_obj_type, spec=spec
     )
 
+    # Capture simplified schemas for reporting
+    req_schema = get_simplified_schema(spec, request_obj_name)
+    res_schema = None
+    response_obj_spec = add_cmd_spec.get("response", {}).get("on-success", {}).get("web", {}).get("object", {})
+    response_obj_name = response_obj_spec.get("object-name")
+    if response_obj_name:
+        res_schema = get_simplified_schema(spec, response_obj_name)
+
     log.info(
         "Generated %d 'Full' test variants for %s.",
         len(payload_variants),
@@ -186,6 +194,8 @@ def run_lifecycle_test(
                 "response": add_res,
                 "success": success,
                 "duration": add_duration,
+                "request_schema": req_schema,
+                "response_schema": res_schema,
             }
         )
 

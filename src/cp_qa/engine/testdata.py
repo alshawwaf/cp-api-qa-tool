@@ -110,8 +110,7 @@ def get_sub_object_name_hints(object_name: str) -> dict:
         return {
             "auto-rule": True,
             "method": "hide",
-            "hide-behind": "gateway",
-            "install-on": "Policy Targets"
+            "hide-behind": "gateway"
         }
     if "ike-phase" in name_lower:
         return {
@@ -119,22 +118,9 @@ def get_sub_object_name_hints(object_name: str) -> dict:
             "encryption-algorithm": "aes-256",
             "diffie-hellman-group": "group-19",
         }
-    if (
-        "advanced-settings" in name_lower
-        or "vpn-routing" in name_lower
-        or "vpn-advanced-settings" in name_lower
-    ):
-        return {
-            "support-ip-compression": True,
-            "use-aggressive-mode": False,
-            "vpn-routing-usage": "all",
-        }
-    if "advanced-properties" in name_lower:
-        return {
-            "support-ip-compression": True,
-            "use-aggressive-mode": False,
-        }
-
+    
+    # Return empty for generic objects to avoid field leakage.
+    # build_sub_object will use the formal spec definition instead.
     return {}
 
 
@@ -165,13 +151,11 @@ def build_sub_object(
 
     name_hints = get_sub_object_name_hints(object_name)
 
+    name_hints = get_sub_object_name_hints(object_name)
+
     obj_def = get_object_by_name(spec, object_name)
     if not obj_def:
         return name_hints
-
-    # Special handling for nat-settings: use proven working config
-    if "NatSettings" in object_name and "CommWithServer" not in object_name:
-        return {"auto-rule": "true", "method": "hide", "hide-behind": "gateway"}
 
     result = dict(name_hints)
 
@@ -186,17 +170,26 @@ def build_sub_object(
 
             # Special case: interfaces list with realistic dummy
             if fname == "interfaces":
-                result[fname] = [
-                    {
-                        "name": "eth0",
-                        "subnet": "10.200.0.0",
-                        "mask-length": 24,
-                        "color": "aquamarine",
-                        "comments": "QA test interface",
-                        "ignore-warnings": True,
-                        "ignore-errors": True,
-                    }
-                ]
+                if current_obj_type == "host":
+                    result[fname] = [
+                        {
+                            "name": "eth0",
+                            "ipv4-address": "10.200.0.1",
+                            "ignore-warnings": True,
+                        }
+                    ]
+                else:
+                    result[fname] = [
+                        {
+                            "name": "eth0",
+                            "subnet": "10.200.0.0",
+                            "mask-length": 24,
+                            "color": "aquamarine",
+                            "comments": "QA test interface",
+                            "ignore-warnings": True,
+                            "ignore-errors": True,
+                        }
+                    ]
                 continue
 
             param_info = {"name": fname, "types": ftypes}
@@ -304,6 +297,8 @@ def generate_test_data(
     if type_name == "integer":
         if "mask-length" in name:
             return 64 if "6" in name else 24
+        if "posix" in name:
+            return 1771500000
         return random.randint(1, 100)
 
     # --- 6. STRINGS: contextual values based on field name ---
@@ -361,7 +356,7 @@ def generate_test_data(
 
     # Install-on
     if "install-on" in name:
-        return "Policy Targets"
+        return "any"
 
     # VPN-specific fields
     if name == "encryption-method":
@@ -372,6 +367,18 @@ def generate_test_data(
         return "to center and to other satellites"
     if name == "tunnel-granularity":
         return "per_subnet"
+
+    # Date and Time formats
+    if "iso-8601" in name:
+        return "2026-12-31T23:59:59Z"
+    if "date" in name:
+        return "31-Dec-2026"
+    if "time" in name and "timeout" not in name:
+        return "23:59"
+
+    # Protocol defaults
+    if name == "protocol" and current_obj_type == "service-other":
+        return random.choice(["TCP", "UDP", "ICMP", "SCTP", "GRE"])
 
     # Default string fallback
     return f"QA_{random.randint(1000, 9999)}"

@@ -32,14 +32,16 @@ def apply_type_defaults(
         spec:             Parsed API spec (needed for VPN community sub-objects).
         current_obj_type: Top-level object type context for test-data generation.
     """
-    # Universal fix: Ensure interfaces don't contain ambiguous or invalid parameters
     log.info(f"DEBUG: apply_type_defaults called for {obj_type}. Payload keys: {list(payload.keys())}")
     
-    # NUCLEAR OPTION: Remove interfaces from gateways to bypass validation hell
-    if obj_type in ("simple-gateway", "simple-cluster") and "interfaces" in payload:
-        log.info(f"DEBUG: Nuclear option - removing interfaces from {obj_type}")
-        payload.pop("interfaces", None)
+    # Fix for all objects: prevent session-level 'details-level' from leaking into create calls
+    # if it's not supported as a parameter.
+    if obj_type != "session":
+        payload.pop("details-level", None)
 
+    # ------------------------------------------------------------------
+    # Universal Interface Normalization
+    # ------------------------------------------------------------------
     if "interfaces" in payload and isinstance(payload["interfaces"], list):
         for iface in payload["interfaces"]:
             if not isinstance(iface, dict):
@@ -54,15 +56,20 @@ def apply_type_defaults(
             # Debug logging
             log.info(f"DEBUG: Processing iface for {obj_type}: {list(iface.keys())}")
 
-            # 2. Type-specific parameter stripping
             if obj_type == "host":
-                # Hosts do NOT support ip-address, topology, anti-spoofing, etc.
-                for f in ["ip-address", "topology", "topology-settings", "anti-spoofing", "anti-spoofing-settings", "security-zone", "security-zone-settings"]:
-                    iface.pop(f, None)
-                # Hosts prefer 'subnet' + 'mask-length'
-                if "subnet4" in iface:
-                    iface["subnet"] = iface.pop("subnet4")
-                    iface["mask-length"] = iface.pop("mask-length4", 24)
+                # Host interfaces are very restricted. Keep ONLY name and IPv4/IPv6.
+                # Actually, if we send interfaces, the server might REQUIRE subnet/mask.
+                allowed = {"name", "ipv4-address", "ipv6-address", "subnet", "mask-length", "mask-length4"}
+                for f in list(iface.keys()):
+                    if f not in allowed:
+                        iface.pop(f, None)
+                # Ensure no conflict between ip-address and ipv4-address
+                if "ip-address" in iface and "ipv4-address" in iface:
+                    iface.pop("ip-address", None)
+                
+                # CRITICAL: For host, top-level address is REQUIRED on create.
+                # Do NOT pop it from payload.
+                pass
             
             elif obj_type in ("simple-gateway", "simple-cluster"):
                 # Gateways prefer 'ip-address' + 'mask-length'
@@ -73,6 +80,9 @@ def apply_type_defaults(
                     iface.pop("mask-length4", None)
                 # Gateways do NOT support 'subnet' as a direct field (it's ambiguous)
                 iface.pop("subnet", None)
+                # Gateways do NOT support ignore-warnings/errors inside the interfaces list
+                iface.pop("ignore-warnings", None)
+                iface.pop("ignore-errors", None)
                 
             # 3. Final cleanup of unrecognized generic parameters
             iface.pop("subnet4", None)
@@ -93,111 +103,122 @@ def apply_type_defaults(
                     iface[setting].pop("name", None)
     
     if obj_type == "time":
-        # Time objects need proper date/recurrence format — not random strings
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors"},
-        )
+        # Time objects need specific toggle consistency
         payload["start-now"] = True
         payload["end-never"] = True
-
-    elif obj_type == "time-group":
-        _keep_only(
-            payload,
-            {
-                "name", "color", "comments", "members",
-                "ignore-warnings", "ignore-errors",
-            },
-        )
+        # Strip recurrence to avoid server-side Null Pointer exceptions
+        payload.pop("recurrence", None)
+        payload.pop("hours-ranges", None)
 
     elif obj_type == "network-feed":
         # Needs a valid feed-url at minimum
-        payload["feed-url"] = (
-            "https://secureupdates.checkpoint.com/IP-list/TOR.txt"
-        )
+        payload["feed-url"] = ("https://secureupdates.checkpoint.com/IP-list/TOR.txt")
         payload["feed-format"] = "Flat List"
         payload["feed-type"] = "IP Address"
-        for f in [
-            "certificate-id", "custom-header", "data-column",
-            "fields-delimiter", "ignore-lines-that-start-with",
-            "json-query", "use-gateway-proxy", "update-interval",
-        ]:
-            payload.pop(f, None)
 
-    elif obj_type in ("simple-gateway", "simple-cluster"):
-        _keep_only(
-            payload,
-            {
-                "name", "color", "comments",
-                "ignore-warnings", "ignore-errors", "ipv4-address", "vpn",
-                "version",
-            },
-        )
-        payload["ipv4-address"] = f"10.100.99.{random.randint(10, 200)}"
-        if "version" not in payload:
+    elif obj_type in ("simple-gateway", "simple-cluster", "checkpoint-host"):
+        # STRATEGY CHANGE: "Greedy" mode. We no longer strip 80% of fields.
+        # We only fix required operational parameters.
+        if "version" not in payload or not payload["version"]:
             payload["version"] = "R81.10"
-        payload["vpn"] = True
-        payload["ignore-warnings"] = True
+        
+        # Ensure name/ipv4 are set if missing from gen
+        if "ipv4-address" not in payload:
+            payload["ipv4-address"] = f"10.100.99.{random.randint(10, 200)}"
+            
+        # Blacklist unhandled complex fields that cause immediate rejection in basic labs
+        _strip_conflicts(payload, {
+            "visitor-mode-interface", # Depends on complex topology
+            "proxies",                # Requires existing proxy objects
+            "sic",                    # Logic handled via 'one-time-password'
+            "hardware",               # Validation is vary strict on hardware strings
+            "os-name",                # Validation is vary strict on OS strings
+        })
 
-    elif obj_type == "checkpoint-host":
-        _keep_only(
-            payload,
-            {
-                "name", "color", "comments",
-                "ignore-warnings", "ignore-errors", "ipv4-address",
-                "host-servers"
-            },
-        )
-        # Remove nat-settings to avoid complex validation errors in demo
+    # ------------------------------------------------------------------
+    # Universal Optimization
+    # ------------------------------------------------------------------
+    # 1. NAT conflict resolution: if hiding behind gateway, don't send IP in NAT
+    nat = payload.get("nat-settings")
+    if isinstance(nat, dict):
+        if nat.get("method") == "hide" and nat.get("hide-behind") == "gateway":
+            _strip_conflicts(nat, {"ip-address", "ipv4-address", "ipv6-address", "install-on"})
+        # 2. General 'install-on' stripping to avoid environment-specific reference errors
+        nat.pop("install-on", None)
+        # 3. Gateway/Cluster specific NAT unrecognized parameter fix (auto-rule is top-level only)
+    # 3.1 Surgical cleanup for nested operational fields
+    def _surgical_cleanup(payload):
+        # 0. Strip ALL Boolean Blades to avoid dependency hell (e.g. missing HTTPS certs)
+        blade_keys = [
+            "firewall", "ips", "anti-bot", "anti-virus", "application-control", 
+            "url-filtering", "content-awareness", "data-loss-prevention", 
+            "mobile-access", "vpn", "monitoring", "identity-awareness",
+            "threat-emulation", "threat-extraction", "zero-phishing",
+            "icap-server", "enable-https-inspection", "qos", "hit-count"
+        ]
+        _strip_conflicts(payload, blade_keys)
+
+        # 1. Nested interfaces: remove complex settings that conflict on creation
+        if "interfaces" in payload and isinstance(payload["interfaces"], list):
+            for iface in payload["interfaces"]:
+                if isinstance(iface, dict):
+                    _strip_conflicts(iface, {
+                        "security-zone-settings", "topology-settings", 
+                        "anti-spoofing-settings", "tags", "groups", "domains-to-process"
+                    })
+        
+        # 2. Specialized sub-objects and settings that cause logic conflicts
+        # Aggressive "Core Only" strategy for complex gateways/hosts
+        for key in list(payload.keys()):
+            if key.endswith("-settings") or "-settings" in key or key in [
+                "one-time-password", "sic-name", "hardware", "os", "version",
+                "management-blades", "send-logs-to-server", "send-alerts-to-server",
+                "send-logs-to-backup-server", "save-logs-locally",
+                "communication-with-servers-behind-nat", "platform-portal-settings",
+                "auto-generate-ip", "auto-topology-custom-recalculation-time",
+                "auto-topology-use-custom-recalculation-time", "fetch-policy"
+            ]:
+                 payload.pop(key, None)
+        
+        # Explicitly remove NAT to avoid any dependency conflicts
         payload.pop("nat-settings", None)
-        payload["ipv4-address"] = f"10.100.98.{random.randint(10, 200)}"
 
-    elif obj_type.startswith("simple-gateway") or obj_type.startswith("simple-cluster"):
-         # Fix visitor mode error
-         payload.pop("visitor-mode-interface", None)
-         # Disable mobile access to avoid dependency on visitor mode
-         payload["mobile-access"] = False
-         
-    elif obj_type == "interoperable-device":
-        _keep_only(
-            payload,
-            {
-                "name", "color", "comments",
-                "ignore-warnings", "ignore-errors", "ipv4-address",
-            },
-        )
-        payload["ipv4-address"] = f"10.100.97.{random.randint(10, 200)}"
+    if obj_type in ["simple-gateway", "simple-cluster", "checkpoint-host", "interoperable-device"]:
+        _surgical_cleanup(payload)
 
-    elif obj_type == "lsv-profile":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "certificate-authority", "restrict-allowed-addresses",
-             "allowed-ip-addresses"},
-        )
-        # certificate-authority is required — use the built-in ICA
+    # 4. LSV profile cleanup
+    if obj_type == "lsv-profile":
+        # LSV profiles require a CA, but one CA can only handle one profile.
+        # We try 'internal_ca' as default.
         payload["certificate-authority"] = "internal_ca"
-        payload["restrict-allowed-addresses"] = False
-        payload["allowed-ip-addresses"] = []
+        _strip_conflicts(payload, {"shared-secret", "vpn-domain"})
+
+    # 5. Interoperable Device / Gateway IP Fix
+    if obj_type in ["interoperable-device", "simple-gateway", "simple-cluster", "checkpoint-host"]:
+        # Interoperable devices have VERY minimal interfaces
+        if obj_type == "interoperable-device" and "interfaces" in payload:
+            for iface in payload["interfaces"]:
+                _strip_conflicts(iface, {"anti-spoofing", "anti-spoofing-settings", "topology", "topology-settings", "domains-to-process"})
+        
+        # Checkpoint hosts don't like logs-settings without blades
+        if obj_type == "checkpoint-host":
+             payload.pop("logs-settings", None)
+
+        if "ip-address" in payload and "ipv4-address" in payload:
+            payload.pop("ip-address", None)
 
     # ------------------------------------------------------------------
     # Services
     # ------------------------------------------------------------------
+    # Services
+    # ------------------------------------------------------------------
     elif obj_type == "service-tcp":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "port", "source-port",
-             "protocol",
-             "session-timeout", "use-default-session-timeout",
-             "match-for-any", "match-by-protocol-signature",
-             "override-default-settings",
-             "keep-connections-open-after-policy-installation",
-             "sync-connections-on-cluster",
-             "use-delayed-sync", "delayed-sync-value",
-             "aggressive-aging",
-             "enable-tcp-resource"},
-        )
+        # Greedy mode: Remove only fields that strictly conflict
+        if not payload.get("use-delayed-sync"):
+            payload.pop("delayed-sync-value", None)
+        if not payload.get("override-default-settings"):
+            # If not overriding, don't send individual default-destined fields
+            pass
         payload["port"] = "9090"
         payload["source-port"] = ">0"
         payload["protocol"] = ""
@@ -219,19 +240,7 @@ def apply_type_defaults(
         payload["enable-tcp-resource"] = False
 
     elif obj_type == "service-udp":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "port", "source-port",
-             "protocol",
-             "session-timeout", "use-default-session-timeout",
-             "accept-replies",
-             "match-for-any", "match-by-protocol-signature",
-             "override-default-settings",
-             "keep-connections-open-after-policy-installation",
-             "sync-connections-on-cluster",
-             "aggressive-aging"},
-        )
+        # Greedy mode
         payload["port"] = "5060"
         payload["source-port"] = ">0"
         payload["protocol"] = ""
@@ -251,38 +260,16 @@ def apply_type_defaults(
         payload["keep-connections-open-after-policy-installation"] = False
 
     elif obj_type == "service-icmp":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "icmp-type", "icmp-code",
-             "keep-connections-open-after-policy-installation"},
-        )
         payload["icmp-type"] = 5    # Redirect
         payload["icmp-code"] = 7
         payload["keep-connections-open-after-policy-installation"] = False
 
     elif obj_type == "service-icmp6":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "icmp-type", "icmp-code",
-             "keep-connections-open-after-policy-installation"},
-        )
         payload["icmp-type"] = 128  # Echo Request (ICMPv6)
         payload["icmp-code"] = 0
         payload["keep-connections-open-after-policy-installation"] = False
 
     elif obj_type == "service-sctp":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "port", "source-port",
-             "session-timeout", "use-default-session-timeout",
-             "match-for-any",
-             "keep-connections-open-after-policy-installation",
-             "sync-connections-on-cluster",
-             "aggressive-aging"},
-        )
         payload["port"] = "5669"
         payload["source-port"] = ">0"
         payload["session-timeout"] = 0
@@ -298,20 +285,9 @@ def apply_type_defaults(
         payload["keep-connections-open-after-policy-installation"] = False
 
     elif obj_type == "service-other":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "ip-protocol", "match", "action",
-             "accept-replies",
-             "override-default-settings",
-             "session-timeout", "use-default-session-timeout",
-             "match-for-any",
-             "keep-connections-open-after-policy-installation",
-             "sync-connections-on-cluster",
-             "aggressive-aging"},
-        )
         payload["ip-protocol"] = 51  # AH (Authentication Header)
-        payload["accept-replies"] = False
+        # protocol field MUST NOT be a standard manual label like "TCP"
+        payload["protocol"] = ""
         payload["override-default-settings"] = False
         payload["session-timeout"] = 0
         payload["use-default-session-timeout"] = True
@@ -326,51 +302,19 @@ def apply_type_defaults(
         payload["keep-connections-open-after-policy-installation"] = False
 
     elif obj_type == "service-dce-rpc":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "interface-uuid",
-             "keep-connections-open-after-policy-installation"},
-        )
         payload["interface-uuid"] = "97aeb460-9aea-11d5-bd16-0090272ccb30"
         payload["keep-connections-open-after-policy-installation"] = False
 
     elif obj_type == "service-rpc":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "program-number",
-             "keep-connections-open-after-policy-installation"},
-        )
         payload["program-number"] = 5669
         payload["keep-connections-open-after-policy-installation"] = False
 
     elif obj_type == "service-compound-tcp":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "compound-service",
-             "keep-connections-open-after-policy-installation"},
-        )
-        # compound-service enum: pointcast | netcaster | backweb | cdf
         payload["compound-service"] = "pointcast"
-        payload["keep-connections-open-after-policy-installation"] = False
-
     elif obj_type == "service-citrix-tcp":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "application"},
-        )
         payload.setdefault("application", "My Citrix Application")
 
     elif obj_type == "service-group":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "members"},
-        )
-        # Empty group is valid — members reference existing services
         payload.pop("members", None)
 
     # ------------------------------------------------------------------
@@ -379,80 +323,39 @@ def apply_type_defaults(
     elif obj_type == "application-site":
         # application-signature and url-list are MUTUALLY EXCLUSIVE — use url-list only
         payload.pop("application-signature", None)
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "primary-category", "url-list",
-             "additional-categories", "description",
-             "urls-defined-as-regular-expression"},
-        )
         payload["primary-category"] = "Custom_Application_Site"
         payload["url-list"] = ["https://qa-test-example.com"]
         payload["additional-categories"] = []
         payload["description"] = "QA test application site"
         payload["urls-defined-as-regular-expression"] = False
 
-    elif obj_type == "application-site-category":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "description"},
-        )
-        payload["description"] = "QA test application site category"
-
     elif obj_type == "application-site-group":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "members"},
-        )
-        # Empty group is valid — members reference existing app sites
         payload.pop("members", None)
 
     # ------------------------------------------------------------------
     # Identity & Access
     # ------------------------------------------------------------------
     elif obj_type == "access-role":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "machines", "networks", "remote-access-clients", "users"},
-        )
-        # Use built-in "Any" for all reference fields
-        payload["machines"] = "Any"
-        payload["networks"] = "Any"
-        payload["remote-access-clients"] = "Any"
-        payload["users"] = "Any"
-
+        payload["machines"] = "any"
+        payload["networks"] = "any"
+        payload["remote-access-clients"] = "any"
+        payload["users"] = "any"
     elif obj_type == "identity-tag":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "external-identifier"},
-        )
         payload.setdefault("external-identifier", "qa-test-identity-tag")
 
     # ------------------------------------------------------------------
     # Threat Prevention
     # ------------------------------------------------------------------
     elif obj_type == "threat-indicator":
-        _keep_only(
-            payload,
-            {"name", "color", "comments", "ignore-warnings", "ignore-errors",
-             "action", "profile-overrides"},
-        )
-        # action enum: Inactive | Ask | Prevent | Detect
         payload["action"] = "Detect"
-        # profile-overrides: override threat prevention profiles per indicator
         payload["profile-overrides"] = []
-        # observables: list of indicator data (IP-based observable)
-        # Must NOT coexist with observables-raw-data
         payload["observables"] = [
             {
                 "name": "qa-test-observable",
                 "ip-address": "198.51.100.99",
             }
         ]
+        payload.pop("observables-raw-data", None)
 
     # ------------------------------------------------------------------
     # VPN Communities
@@ -465,11 +368,10 @@ def apply_type_defaults(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _keep_only(payload: dict, allowed: set[str]) -> None:
-    """Remove all keys from *payload* that are not in *allowed*."""
-    for key in list(payload.keys()):
-        if key not in allowed:
-            payload.pop(key, None)
+def _strip_conflicts(payload: dict, problematic: set[str]) -> None:
+    """Remove specific keys from *payload* that are known to fail."""
+    for key in problematic:
+        payload.pop(key, None)
 
 
 def _apply_vpn_community_defaults(

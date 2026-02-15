@@ -43,18 +43,22 @@ def extract_params_from_obj(obj_def: dict) -> list[dict]:
 
     for field_list, is_required in field_lists:
         for field in field_list:
+            fname = field.get("name")
+            if not fname: continue
+
             param: dict[str, Any] = {
-                "name": field.get("name"),
+                "name": fname,
                 "mandatory": is_required or field.get("required", False),
                 "group": field.get("group", "default"),
                 "types": field.get("types", [{"name": "string"}]),
+                "description": field.get("description", ""),
             }
             params.append(param)
 
             # Handle mutually exclusive field-alternatives
             alternatives = field.get("field-alternatives", [])
             if alternatives:
-                group_id = f"group_{field.get('name')}"
+                group_id = f"group_{fname}"
                 param["group"] = group_id
                 for alt in alternatives:
                     alt_param: dict[str, Any] = {
@@ -62,6 +66,7 @@ def extract_params_from_obj(obj_def: dict) -> list[dict]:
                         "mandatory": is_required,
                         "group": group_id,
                         "types": alt.get("types", [{"name": "string"}]),
+                        "description": alt.get("description", ""),
                     }
                     params.append(alt_param)
 

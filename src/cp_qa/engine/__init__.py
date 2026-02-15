@@ -65,8 +65,13 @@ class APIQAEngine:
         Returns:
             ``True`` on success, ``False`` on failure.
         """
-        self.spec = spec.fetch_spec(self.spec_url)
+        self.spec = spec.fetch_spec(self.spec_url, headers=getattr(self.client, "headers", None))
         return self.spec is not None
+
+    def reconstruct_full_spec(self, base_url: str, version: str) -> dict | None:
+        """Reconstruct the full API spec from multiple sources."""
+        self.spec = spec.reconstruct_full_spec(base_url, version)
+        return self.spec
 
     def get_commands_by_section(self, section_name: str) -> list[dict]:
         """Return all documented commands within a specific section.
