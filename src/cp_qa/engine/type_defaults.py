@@ -121,11 +121,11 @@ def apply_type_defaults(
         # We only fix required operational parameters.
         if "version" not in payload or not payload["version"]:
             payload["version"] = "R81.10"
-        
+
         # Ensure name/ipv4 are set if missing from gen
         if "ipv4-address" not in payload:
             payload["ipv4-address"] = f"10.100.99.{random.randint(10, 200)}"
-            
+
         # Blacklist unhandled complex fields that cause immediate rejection in basic labs
         _strip_conflicts(payload, {
             "visitor-mode-interface", # Depends on complex topology
@@ -134,6 +134,26 @@ def apply_type_defaults(
             "hardware",               # Validation is vary strict on hardware strings
             "os-name",                # Validation is vary strict on OS strings
         })
+
+        # Clusters use member-based topology, not direct interfaces
+        if obj_type == "simple-cluster":
+            payload.pop("interfaces", None)
+            # Tags generated as {} (dict) instead of [] (list) — remove to avoid type error
+            if isinstance(payload.get("tags"), dict):
+                payload.pop("tags", None)
+            # Members need minimal fields; strip nested interfaces and bad sub-params
+            if "members" in payload and isinstance(payload["members"], list):
+                clean_members = []
+                for m in payload["members"]:
+                    if not isinstance(m, dict):
+                        continue
+                    cm = {
+                        "name": m.get("name", m.get("new-name", f"member_{random.randint(100,999)}")),
+                        "ip-address": m.get("ip-address", f"10.100.1.{random.randint(10,200)}"),
+                        "one-time-password": "vpn123!@#",
+                    }
+                    clean_members.append(cm)
+                payload["members"] = clean_members if clean_members else []
 
     # ------------------------------------------------------------------
     # Universal Optimization
@@ -191,7 +211,10 @@ def apply_type_defaults(
         # LSV profiles require a CA, but one CA can only handle one profile.
         # We try 'internal_ca' as default.
         payload["certificate-authority"] = "internal_ca"
-        _strip_conflicts(payload, {"shared-secret", "vpn-domain"})
+        _strip_conflicts(payload, {
+            "shared-secret", "vpn-domain",
+            "allowed-ip-addresses", "restrict-allowed-addresses",
+        })
 
     # 5. Interoperable Device / Gateway IP Fix
     if obj_type in ["interoperable-device", "simple-gateway", "simple-cluster", "checkpoint-host"]:
