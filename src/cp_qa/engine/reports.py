@@ -237,7 +237,7 @@ def export_report(results: list[dict], file_path: str) -> None:
 # Markdown summary report
 # ---------------------------------------------------------------------------
 
-def export_markdown_report(results: list[dict], file_path: str, *, api_version: str = "") -> None:
+def export_markdown_report(results: list[dict], file_path: str, *, api_version: str = "", version_source: str = "") -> None:
     """Generate a professional performance audit report in Markdown.
 
     The report contains:
@@ -259,7 +259,11 @@ def export_markdown_report(results: list[dict], file_path: str, *, api_version: 
     labels = _variant_labels(add_keys)
     summary = _variant_summary(results, skip)
 
-    ver_label = f"v{api_version}" if api_version else "unknown"
+    if api_version:
+        src = "user-specified" if version_source == "user" else "auto-detected"
+        ver_label = f"v{api_version} ({src})"
+    else:
+        ver_label = "unknown"
     lines: list[str] = [
         "# API QA Performance Audit Report",
         f"**API Version:** {ver_label}  ",
@@ -403,7 +407,7 @@ def export_markdown_report(results: list[dict], file_path: str, *, api_version: 
 # Example payloads
 # ---------------------------------------------------------------------------
 
-def export_examples(results: list[dict], base_dir: str, *, api_version: str = "") -> None:
+def export_examples(results: list[dict], base_dir: str, *, api_version: str = "", version_source: str = "") -> None:
     """Export each variant as a standalone JSON example file.
 
     Structure::
@@ -449,7 +453,11 @@ def export_examples(results: list[dict], base_dir: str, *, api_version: str = ""
 
         # Professional name and comment
         pretty = otype.replace("-", " ").title().replace(" ", "_")
-        ver_label = f"v{api_version}" if api_version else "latest"
+        if api_version:
+            src = "user-specified" if version_source == "user" else "auto-detected"
+            ver_label = f"v{api_version} ({src})"
+        else:
+            ver_label = "latest"
         if dist_fields:
             tag = "-".join(dist_fields[:2])
             payload["name"] = f"Example_{pretty}_{tag}"
@@ -485,7 +493,7 @@ def export_examples(results: list[dict], base_dir: str, *, api_version: str = ""
 # Per-type reports (saved alongside examples)
 # ---------------------------------------------------------------------------
 
-def export_per_type_reports(results: list[dict], base_dir: str, *, api_version: str = "") -> None:
+def export_per_type_reports(results: list[dict], base_dir: str, *, api_version: str = "", version_source: str = "") -> None:
     """Generate a separate QA report and raw JSON for each object type.
 
     For every tested object type, creates two files inside its example
@@ -526,7 +534,7 @@ def export_per_type_reports(results: list[dict], base_dir: str, *, api_version: 
 
         # --- Per-type Markdown report ---
         md_path = os.path.join(out_dir, "QA_REPORT.md")
-        _write_per_type_markdown(obj_type, type_results, skip, md_path, api_version=api_version)
+        _write_per_type_markdown(obj_type, type_results, skip, md_path, api_version=api_version, version_source=version_source)
         count += 1
 
     log.info("Exported per-type reports for %d object types to %s", count, base_dir)
@@ -539,13 +547,18 @@ def _write_per_type_markdown(
     file_path: str,
     *,
     api_version: str = "",
+    version_source: str = "",
 ) -> None:
     """Write a self-contained Markdown report for a single object type."""
     add_keys = _variant_add_keys(type_results, skip)
     labels = _variant_labels(add_keys)
     summary = _variant_summary(type_results, skip)
 
-    ver_label = f"v{api_version}" if api_version else "unknown"
+    if api_version:
+        src = "user-specified" if version_source == "user" else "auto-detected"
+        ver_label = f"v{api_version} ({src})"
+    else:
+        ver_label = "unknown"
     lines: list[str] = [
         f"# QA Report: `{obj_type}`",
         f"**API Version:** {ver_label}  ",

@@ -34,8 +34,8 @@ def apply_type_defaults(
     """
     log.info(f"DEBUG: apply_type_defaults called for {obj_type}. Payload keys: {list(payload.keys())}")
     
-    # Fix for all objects: prevent session-level 'details-level' from leaking into create calls
-    # if it's not supported as a parameter.
+    # details-level is a session-level parameter; sending it on create causes
+    # validation failures on some types — strip universally
     if obj_type != "session":
         payload.pop("details-level", None)
 
@@ -106,9 +106,12 @@ def apply_type_defaults(
         # Time objects need specific toggle consistency
         payload["start-now"] = True
         payload["end-never"] = True
-        # Strip recurrence to avoid server-side Null Pointer exceptions
-        payload.pop("recurrence", None)
-        payload.pop("hours-ranges", None)
+        # Safe recurrence (single weekly pattern avoids server NPE)
+        payload["recurrence"] = {
+            "pattern": "Weekly",
+            "weekdays": ["Mon"],
+        }
+        payload["hours-ranges"] = [{"from": "00:00", "to": "23:59"}]
 
     elif obj_type == "network-feed":
         # Needs a valid feed-url at minimum
@@ -168,39 +171,58 @@ def apply_type_defaults(
         # 3. Gateway/Cluster specific NAT unrecognized parameter fix (auto-rule is top-level only)
     # 3.1 Surgical cleanup for nested operational fields
     def _surgical_cleanup(payload):
-        # 0. Strip ALL Boolean Blades to avoid dependency hell (e.g. missing HTTPS certs)
-        blade_keys = [
-            "firewall", "ips", "anti-bot", "anti-virus", "application-control", 
-            "url-filtering", "content-awareness", "data-loss-prevention", 
+        # 0. Blade booleans: set to False (safe — proves API accepts the field
+        #    without activating the blade or triggering prerequisite checks)
+        for blade in (
+            "firewall", "ips", "anti-bot", "anti-virus", "application-control",
+            "url-filtering", "content-awareness", "data-loss-prevention",
             "mobile-access", "vpn", "monitoring", "identity-awareness",
             "threat-emulation", "threat-extraction", "zero-phishing",
-            "icap-server", "enable-https-inspection", "qos", "hit-count"
-        ]
-        _strip_conflicts(payload, blade_keys)
+            "icap-server", "qos", "hit-count",
+        ):
+            if blade in payload:
+                payload[blade] = False
+
+        # enable-https-inspection requires an outbound certificate even
+        # when set to False — must be stripped entirely
+        payload.pop("enable-https-inspection", None)
+        payload.pop("https-inspection", None)
 
         # 1. Nested interfaces: remove complex settings that conflict on creation
         if "interfaces" in payload and isinstance(payload["interfaces"], list):
             for iface in payload["interfaces"]:
                 if isinstance(iface, dict):
                     _strip_conflicts(iface, {
-                        "security-zone-settings", "topology-settings", 
+                        "security-zone-settings", "topology-settings",
                         "anti-spoofing-settings", "tags", "groups", "domains-to-process"
                     })
-        
-        # 2. Specialized sub-objects and settings that cause logic conflicts
-        # Aggressive "Core Only" strategy for complex gateways/hosts
+
+        # 2. Settings objects: strip all *-settings (deep dependency chains)
         for key in list(payload.keys()):
-            if key.endswith("-settings") or "-settings" in key or key in [
-                "one-time-password", "sic-name", "hardware", "os", "version",
-                "management-blades", "send-logs-to-server", "send-alerts-to-server",
-                "send-logs-to-backup-server", "save-logs-locally",
-                "communication-with-servers-behind-nat", "platform-portal-settings",
-                "auto-generate-ip", "auto-topology-custom-recalculation-time",
-                "auto-topology-use-custom-recalculation-time", "fetch-policy"
-            ]:
-                 payload.pop(key, None)
-        
-        # Explicitly remove NAT to avoid any dependency conflicts
+            if key.endswith("-settings") or "-settings" in key:
+                payload.pop(key, None)
+
+        # 3. Operational fields requiring external prerequisites
+        _strip_conflicts(payload, {
+            "version",                 # API rejects version on ADD even with valid values
+            "one-time-password",       # SIC initialization requires manual pairing
+            "sic-name",                # SIC trust requires established SIC
+            "hardware",                # strict hardware string validation
+            "os",                      # strict OS string validation
+            "management-blades",       # nested blade objects with dependencies
+            "send-logs-to-server",     # references log-server objects
+            "send-alerts-to-server",   # references alert-server objects
+            "send-logs-to-backup-server",  # references backup-server objects
+            "save-logs-locally",       # may conflict with log-server settings
+            "communication-with-servers-behind-nat",  # requires NAT topology
+            "platform-portal-settings",  # requires portal infrastructure
+            "auto-generate-ip",        # conflicts with explicit IP assignment
+            "auto-topology-custom-recalculation-time",
+            "auto-topology-use-custom-recalculation-time",
+            "fetch-policy",            # references policy objects
+        })
+
+        # NAT has complex dependency chains — strip entirely
         payload.pop("nat-settings", None)
 
     if obj_type in ["simple-gateway", "simple-cluster", "checkpoint-host", "interoperable-device"]:
@@ -338,7 +360,7 @@ def apply_type_defaults(
         payload.setdefault("application", "My Citrix Application")
 
     elif obj_type == "service-group":
-        payload.pop("members", None)
+        payload["members"] = []
 
     # ------------------------------------------------------------------
     # Application & URL Filtering
@@ -353,7 +375,7 @@ def apply_type_defaults(
         payload["urls-defined-as-regular-expression"] = False
 
     elif obj_type == "application-site-group":
-        payload.pop("members", None)
+        payload["members"] = []
 
     # ------------------------------------------------------------------
     # Identity & Access
@@ -414,6 +436,7 @@ def _apply_vpn_community_defaults(
     # --- Fields safe to send (no external object references) ---
     safe_fields = {
         "name", "color", "comments", "ignore-warnings", "ignore-errors",
+        "tags", "set-if-exists",
         # Gateway lists (populated by _inject_helpers)
         "center-gateways", "satellite-gateways", "gateways",
         # Encryption & IKE
@@ -425,6 +448,8 @@ def _apply_vpn_community_defaults(
         "disable-nat",
         # Shared secret toggle (boolean, no references)
         "use-shared-secret",
+        # Traffic & tunnel booleans/enums (no external refs)
+        "encrypted-traffic", "wire-mode",
     }
 
     # Star-only fields
@@ -512,6 +537,10 @@ def _apply_vpn_community_defaults(
         payload.setdefault("gateways", [])
 
     payload["ignore-warnings"] = True
+
+    # Traffic & tunnel settings (safe booleans/enums)
+    payload.setdefault("encrypted-traffic", "any")
+    payload.setdefault("wire-mode", "off")
 
     # Strip everything not in safe_fields
     for key in list(payload.keys()):

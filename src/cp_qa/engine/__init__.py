@@ -40,17 +40,20 @@ class APIQAEngine:
         results: Accumulated lifecycle test results.
     """
 
-    def __init__(self, client: Any, spec_url: str, api_version: str = "") -> None:
+    def __init__(self, client: Any, spec_url: str, api_version: str = "",
+                 version_source: str = "auto") -> None:
         """Initialise the engine.
 
         Args:
-            client:      An authenticated API client instance.
-            spec_url:    URL to the Check Point API specification JSON.
-            api_version: Detected API version string (e.g. ``"2.0.1"``).
+            client:         An authenticated API client instance.
+            spec_url:       URL to the Check Point API specification JSON.
+            api_version:    Detected API version string (e.g. ``"2.0.1"``).
+            version_source: ``"auto"`` (server-detected) or ``"user"`` (CLI override).
         """
         self.client = client
         self.spec_url = spec_url
         self.api_version = api_version
+        self.version_source = version_source
         self.spec: dict | None = None
         self.results: list[dict] = []
         self._current_obj_type: str = ""
@@ -134,7 +137,7 @@ class APIQAEngine:
         Args:
             file_path: Output path.
         """
-        reports.export_markdown_report(self.results, file_path, api_version=self.api_version)
+        reports.export_markdown_report(self.results, file_path, api_version=self.api_version, version_source=self.version_source)
 
     def export_examples(self, base_dir: str) -> None:
         """Export standalone JSON example files per variant.
@@ -142,7 +145,7 @@ class APIQAEngine:
         Args:
             base_dir: Output directory.
         """
-        reports.export_examples(self.results, base_dir, api_version=self.api_version)
+        reports.export_examples(self.results, base_dir, api_version=self.api_version, version_source=self.version_source)
 
     def export_per_type_reports(self, base_dir: str) -> None:
         """Generate a separate QA report and raw JSON for each object type.
@@ -153,7 +156,7 @@ class APIQAEngine:
         Args:
             base_dir: Examples base directory (e.g. ``reports/examples``).
         """
-        reports.export_per_type_reports(self.results, base_dir, api_version=self.api_version)
+        reports.export_per_type_reports(self.results, base_dir, api_version=self.api_version, version_source=self.version_source)
 
     # ------------------------------------------------------------------
     # Demo mode

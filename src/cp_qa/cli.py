@@ -415,6 +415,11 @@ def main() -> None:
         default=None,
         help="API key for key-based authentication (replaces user/password)",
     )
+    conn.add_argument(
+        "--api-version",
+        default=None,
+        help="Override auto-detected API spec version (e.g. '2.1', '2.0.1')",
+    )
 
     # --- Mode ---
     mode_grp = parser.add_argument_group("Mode")
@@ -503,13 +508,22 @@ def main() -> None:
     api_version = "2.0"
     engine: APIQAEngine | None = None
     
+    version_source = "auto"
     if not args.dry_run:
         sid, api_version = client.login()
-        log.info("Authenticated to %s (Detected API Version: %s)", args.management, api_version)
-        
+        if args.api_version:
+            log.info(
+                "Authenticated to %s (server=%s, overriding to user-specified=%s)",
+                args.management, api_version, args.api_version,
+            )
+            api_version = args.api_version
+            version_source = "user"
+        else:
+            log.info("Authenticated to %s (Detected API Version: %s)", args.management, api_version)
+
         # Use documentation reconstruction (static + dynamic) if possible
         spec_url_base = f"https://sc1.checkpoint.com/documents/latest/APIs/data/v{api_version}/"
-        engine = APIQAEngine(client, spec_url_base, api_version=api_version)
+        engine = APIQAEngine(client, spec_url_base, api_version=api_version, version_source=version_source)
         engine.spec = engine.reconstruct_full_spec(spec_url_base, api_version)
         
         if not engine.spec:
@@ -521,6 +535,10 @@ def main() -> None:
                  return
         log.info("Final spec URL in use: %s", engine.spec_url)
     else:
+        if args.api_version:
+            api_version = args.api_version
+            version_source = "user"
+            log.info("[DRY-RUN] Using user-specified API version: %s", api_version)
         # Dry-run uses local spec if available, otherwise default URL
         if os.path.exists(local_spec):
             spec_url = f"file:///{local_spec.replace(os.sep, '/')}"
@@ -528,8 +546,8 @@ def main() -> None:
         else:
             spec_url = API_SPEC_URL
             log.info("[DRY-RUN] Using default spec URL: %s", spec_url)
-        
-        engine = APIQAEngine(client, spec_url, api_version=api_version)
+
+        engine = APIQAEngine(client, spec_url, api_version=api_version, version_source=version_source)
         if not engine.fetch_spec():
             return
 
