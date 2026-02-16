@@ -16,6 +16,7 @@ the API accepts the payload or all known fixes are exhausted.
 
 from __future__ import annotations
 
+import random
 import re
 
 from cp_qa.logging import get_logger
@@ -183,6 +184,29 @@ def auto_fix_payload(
     # --- Address range is not valid (first > last) -----------------------
     if "address range is not valid" in error_text and not fixed:
         fixed = _fix_address_range_order(payload) or fixed
+
+    # --- Mandatory / missing parameter -----------------------------------
+    if "mandatory" in error_text and not fixed:
+        match = re.search(r"parameter \[([^\]]+)\].*mandatory", error_text)
+        if not match:
+            match = re.search(r"mandatory.*parameter \[([^\]]+)\]", error_text)
+        if match:
+            field = match.group(1)
+            if "password" in field or "secret" in field:
+                payload[field] = "Qa1234!@#$"
+            elif "address" in field:
+                payload[field] = f"10.100.2.{random.randint(10, 200)}"
+            elif "port" in field:
+                payload[field] = 8080
+            else:
+                payload[field] = f"QA_{random.randint(1000, 9999)}"
+            log.info("  FIX: Added mandatory field '%s'", field)
+            fixed = True
+
+    # --- "not supported" on this server version ---------------------------
+    if "not supported" in error_text and "command" in error_text and not fixed:
+        log.info("  FIX: Command not supported on this server version")
+        return False  # Signal no fix possible
 
     # --- Generic validation failure (last resort) ------------------------
     if (

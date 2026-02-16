@@ -20,6 +20,7 @@ cp-qa = "cp_qa.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest", "black", "ruff"]
+certs = ["cryptography>=41.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

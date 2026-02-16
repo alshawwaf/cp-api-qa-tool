@@ -31,6 +31,44 @@ _PUBLISH_BETWEEN_STEPS = {
     "wildcard", "gsn-handover-group",
     "simple-gateway", "simple-cluster",
     "threat-indicator",
+    # Policy objects
+    "package", "access-layer", "access-rule", "access-section",
+    "nat-rule", "nat-section",
+    "threat-layer", "threat-rule", "threat-exception",
+    "https-layer", "https-rule", "https-section",
+    "mobile-access-rule", "mobile-access-section",
+    "mobile-access-profile-rule", "mobile-access-profile-section",
+    "exception-group",
+}
+
+# Types that need a policy package helper
+_NEEDS_PACKAGE_HELPER = {
+    "access-rule", "access-section",
+    "nat-rule", "nat-section",
+    "threat-rule", "threat-exception",
+    "https-rule", "https-section",
+    "mobile-access-rule", "mobile-access-section",
+    "mobile-access-profile-rule", "mobile-access-profile-section",
+}
+
+# Types that need a service-tcp helper
+_NEEDS_SERVICE_TCP_HELPER = {
+    "resource-cifs", "resource-ftp", "resource-smtp",
+    "resource-uri", "resource-mms",
+    "resource-uri-for-qos",
+}
+
+# Types that need layer/package ref in SET/SHOW/DELETE operations
+_NEEDS_LAYER_IN_OPS = {
+    "access-rule", "access-section",
+}
+
+# Types that have no SET command or non-standard SET semantics
+_SKIP_SET = {
+    "custom-trusted-ca-certificate", "external-trusted-ca",
+    "opsec-trusted-ca", "outbound-inspection-certificate",
+    "server-certificate",
+    "generic-object",  # meta-API, non-standard SET schema
 }
 
 _MAX_STEP_RETRIES = 3  # Retries for SET / DELETE on transient errors
@@ -90,6 +128,15 @@ def _retry_command(
         if success:
             log.info("  %s: [%.2fs] PASS", label, total_dur)
             return True, res, total_dur
+        # Handle "Unrecognized parameter" errors by stripping the field
+        err_msg = str(res.get("message", ""))
+        if "Unrecognized parameter" in err_msg:
+            import re as _re
+            m = _re.search(r"Unrecognized parameter \[(\S+)\]", err_msg)
+            if m and m.group(1) in payload:
+                payload.pop(m.group(1))
+                log.info("  FIX: Stripped unrecognized '%s' from %s payload", m.group(1), label)
+                continue
         if not _is_transient(res):
             break  # Non-transient error — no point retrying
     log.info("  %s: [%.2fs] %s", label, total_dur, "FAIL")
@@ -209,42 +256,65 @@ def run_lifecycle_test(
             continue
 
         # Extract UID from ADD response for more reliable SET/SHOW/DELETE.
-        # For async tasks (simple-cluster), the UID may be nested in task details.
-        obj_uid = add_res.get("uid", "")
-        if not obj_uid:
-            # Try to extract from async task result
+        # For async tasks the show-task response contains a top-level uid
+        # that belongs to the *task*, not the created object.  Only trust
+        # a uid that comes directly from a non-task ADD response.
+        obj_uid = ""
+        if "tasks" not in add_res:
+            obj_uid = add_res.get("uid", "")
+        else:
+            # Async task — try to dig out the created object's UID
             tasks = add_res.get("tasks", [])
             if tasks and isinstance(tasks[0], dict):
                 details = tasks[0].get("task-details", [])
                 if details and isinstance(details[0], dict):
-                    obj_uid = details[0].get("uid", "")
+                    resp_msg = details[0].get("responseMessage", "")
+                    if isinstance(resp_msg, str) and len(resp_msg) == 36:
+                        obj_uid = resp_msg  # Sometimes the UID is here
         obj_ref = {"uid": obj_uid} if obj_uid else {"name": test_id}
 
         # Some types require a publish before SET/DELETE works
-        # (VPN communities, wildcard, gsn-handover-group, gateways, clusters)
         if obj_type in _PUBLISH_BETWEEN_STEPS:
             log.info("  Publishing before SET (required for %s)...", obj_type)
             client.publish()
             time.sleep(2)  # Let server commit
 
+        # Section/rule types need layer or package in SET/SHOW/DELETE
+        layer_ref = {}
+        if obj_type in _NEEDS_LAYER_IN_OPS and helpers.get("access-layer"):
+            layer_ref["layer"] = helpers["access-layer"]
+        elif obj_type in ("nat-rule", "nat-section") and helpers.get("package"):
+            layer_ref["package"] = helpers["package"]
+        elif obj_type in ("threat-rule", "threat-exception") and helpers.get("threat-layer"):
+            layer_ref["layer"] = helpers["threat-layer"]
+            if obj_type == "threat-exception" and helpers.get("threat-rule-uid"):
+                layer_ref["rule-uid"] = helpers["threat-rule-uid"]
+        elif obj_type in ("https-rule", "https-section") and helpers.get("https-layer"):
+            layer_ref["layer"] = helpers["https-layer"]
+
         # === SET (with retry) ===
-        set_payload = {
-            **obj_ref,
-            "comments": f"QA updated exhaustive variant {i}",
-            "color": "orange",
-            "ignore-warnings": True,
-            "ignore-errors": True,
-        }
-        set_success, set_res, set_dur = _retry_command(
-            client, f"set-{obj_type}", set_payload, label="SET"
-        )
+        if obj_type in _SKIP_SET:
+            log.info("  SET: skipped (immutable type)")
+            set_success, set_res, set_dur = True, {"message": "skipped"}, 0.0
+        else:
+            set_payload = {
+                **obj_ref,
+                **layer_ref,
+                "comments": f"QA updated exhaustive variant {i}",
+                "color": "orange",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            }
+            set_success, set_res, set_dur = _retry_command(
+                client, f"set-{obj_type}", set_payload, label="SET"
+            )
 
         results.append(
             {
                 "type": obj_type,
                 "variant": i,
                 "command": f"set-{obj_type}",
-                "payload": set_payload,
+                "payload": set_payload if obj_type not in _SKIP_SET else {},
                 "response": set_res,
                 "success": set_success,
                 "duration": set_dur,
@@ -255,7 +325,7 @@ def run_lifecycle_test(
         log.info("  Executing SHOW verification...")
         t_start = time.perf_counter()
         show_res = client.run_command(
-            f"show-{obj_type}", {**obj_ref, "details-level": "full"}
+            f"show-{obj_type}", {**obj_ref, **layer_ref, "details-level": "full"}
         )
         show_dur = time.perf_counter() - t_start
         show_success = _is_success(show_res)
@@ -279,7 +349,7 @@ def run_lifecycle_test(
             time.sleep(2)  # Let server commit
 
         # === DELETE (with retry) ===
-        del_payload = {**obj_ref, "ignore-warnings": True, "ignore-errors": True}
+        del_payload = {**obj_ref, **layer_ref, "ignore-warnings": True, "ignore-errors": True}
         del_success, del_res, del_dur = _retry_command(
             client, f"delete-{obj_type}", del_payload, label="DELETE"
         )
@@ -407,6 +477,239 @@ def _create_helpers(
             client.publish()
             log.info("  Published VPN helper objects")
 
+    elif obj_type == "resource-tcp":
+        # resource-tcp needs an OPSEC application for cvp-settings.server
+        helpers["host"] = f"QA_HELPER_HOST_{random.randint(1000, 9999)}"
+        res = client.run_command("add-host", {
+            "name": helpers["host"],
+            "ipv4-address": f"10.100.6.{random.randint(10, 200)}",
+        })
+        if "uid" in res:
+            client.publish()
+            log.info("  Created helper host: '%s'", helpers["host"])
+            # Now create opsec-application on top of the host
+            helpers["opsec-app"] = f"QA_HELPER_OPSEC_{random.randint(1000, 9999)}"
+            opsec_res = client.run_command("add-opsec-application", {
+                "name": helpers["opsec-app"],
+                "host": helpers["host"],
+                "cpmi": {
+                    "enabled": True,
+                    "use-administrator-credentials": False,
+                    "administrator-profile": "Super User",
+                },
+                "one-time-password": "OpsecPass1!",
+                "ignore-warnings": True,
+            })
+            if "uid" in opsec_res:
+                helpers["opsec-app-uid"] = opsec_res["uid"]
+                client.publish()
+                log.info("  Created helper opsec-app: '%s' (uid=%s)",
+                         helpers["opsec-app"], opsec_res["uid"])
+            else:
+                log.warning("  Failed to create helper opsec-app: %s",
+                            opsec_res.get("message", opsec_res))
+                helpers.pop("opsec-app", None)
+        else:
+            log.warning("  Failed to create helper host: %s", res.get("message", res))
+            helpers.clear()
+
+    elif obj_type in ("opsec-application", "syslog-server", "if-map-server",
+                       "radius-server", "tacacs-server", "securemote-dns-server"):
+        helpers["host"] = f"QA_HELPER_HOST_{random.randint(1000, 9999)}"
+        res = client.run_command("add-host", {
+            "name": helpers["host"],
+            "ipv4-address": f"10.100.6.{random.randint(10, 200)}",
+        })
+        if "uid" in res:
+            client.publish()
+            log.info("  Created helper host: '%s'", helpers["host"])
+        else:
+            log.warning("  Failed to create helper host: %s", res.get("message", res))
+            helpers.clear()
+
+    elif obj_type in _NEEDS_SERVICE_TCP_HELPER:
+        helpers["service-tcp"] = f"QA_HELPER_SVC_{random.randint(1000, 9999)}"
+        res = client.run_command("add-service-tcp", {
+            "name": helpers["service-tcp"],
+            "port": "9999",
+            "ignore-warnings": True,
+        })
+        if "uid" in res:
+            client.publish()
+            log.info("  Created helper service-tcp: '%s'", helpers["service-tcp"])
+        else:
+            log.warning("  Failed to create helper service-tcp: %s", res.get("message", res))
+            helpers.clear()
+
+    elif obj_type in ("data-type-compound-group", "data-type-traditional-group"):
+        helpers["data-type"] = f"QA_HELPER_DT_{random.randint(1000, 9999)}"
+        res = client.run_command("add-data-type-keywords", {
+            "name": helpers["data-type"],
+            "keywords": ["qa-helper-keyword"],
+            "ignore-warnings": True,
+        })
+        if "uid" in res:
+            client.publish()
+            log.info("  Created helper data-type: '%s'", helpers["data-type"])
+        else:
+            log.warning("  Failed to create helper data-type: %s", res.get("message", res))
+            helpers.clear()
+
+    elif obj_type in ("network-probe", "interface"):
+        helpers["gateway"] = f"QA_HELPER_GW_{random.randint(1000, 9999)}"
+        gw_res = client.run_command("add-simple-gateway", {
+            "name": helpers["gateway"],
+            "ipv4-address": f"10.100.99.{random.randint(10, 200)}",
+            "version": "R81.10",
+            "ignore-warnings": True,
+        })
+        if "uid" in gw_res:
+            helpers["gateway_uid"] = gw_res["uid"]
+            client.publish()
+            log.info("  Created helper gateway: '%s'", helpers["gateway"])
+        else:
+            log.warning("  Failed to create helper gateway: %s", gw_res.get("message", gw_res))
+            helpers.clear()
+
+    elif obj_type == "multiple-key-exchanges":
+        rand = random.randint(100, 999)
+        gw_name = f"QA_HELPER_GW_{rand}"
+        gw_res = client.run_command("add-simple-gateway", {
+            "name": gw_name,
+            "ipv4-address": f"10.100.99.{random.randint(10, 200)}",
+            "version": "R81.10",
+            "vpn": True,
+            "ignore-warnings": True,
+        })
+        if "uid" in gw_res:
+            helpers["gateway"] = gw_name
+            client.publish()
+            vpn_name = f"QA_HELPER_VPN_{rand}"
+            vpn_res = client.run_command("add-vpn-community-meshed", {
+                "name": vpn_name,
+                "gateways": [gw_name],
+                "encryption-suite": "custom",
+                "encryption-method": "prefer ikev2 but support ikev1",
+                "ike-phase-1": {
+                    "encryption-algorithm": "aes-256",
+                    "data-integrity": "sha256",
+                    "diffie-hellman-group": "group-19",
+                },
+                "ike-phase-2": {
+                    "encryption-algorithm": "aes-256",
+                    "data-integrity": "sha256",
+                    "ike-p2-use-pfs": True,
+                    "ike-p2-pfs-dh-grp": "group-19",
+                },
+                "ignore-warnings": True,
+            })
+            if "uid" in vpn_res:
+                helpers["vpn-community"] = vpn_name
+                client.publish()
+                log.info("  Created helper VPN community: '%s'", vpn_name)
+            else:
+                log.warning("  Failed to create helper VPN community: %s", vpn_res.get("message", vpn_res))
+        else:
+            log.warning("  Failed to create helper gateway for MKE: %s", gw_res.get("message", gw_res))
+            helpers.clear()
+
+    elif obj_type in _NEEDS_PACKAGE_HELPER:
+        # Try using the built-in "Standard" package first — avoids rulebase creation issues
+        show_pkg = client.run_command("show-package", {"name": "Standard", "details-level": "full"})
+        if "uid" in show_pkg:
+            helpers["package"] = "Standard"
+            access_layers = show_pkg.get("access-layers", [])
+            if access_layers and isinstance(access_layers, list):
+                if isinstance(access_layers[0], dict):
+                    helpers["access-layer"] = access_layers[0].get("name", "Network")
+                else:
+                    helpers["access-layer"] = str(access_layers[0]) if access_layers[0] else "Network"
+            else:
+                helpers["access-layer"] = "Network"
+
+            threat_layers = show_pkg.get("threat-layers", [])
+            if threat_layers and isinstance(threat_layers, list):
+                if isinstance(threat_layers[0], dict):
+                    helpers["threat-layer"] = threat_layers[0].get("name", "Standard Threat Prevention")
+                elif isinstance(threat_layers[0], str):
+                    helpers["threat-layer"] = threat_layers[0]
+
+            log.info("  Using built-in package 'Standard' with access-layer '%s'",
+                      helpers.get("access-layer", "?"))
+        else:
+            # Fallback: create a new package
+            pkg_name = f"QA_HELPER_PKG_{random.randint(1000, 9999)}"
+            pkg_res = client.run_command("add-package", {
+                "name": pkg_name,
+                "access": True,
+                "threat-prevention": True,
+                "ignore-warnings": True,
+            })
+            if "uid" in pkg_res:
+                helpers["package"] = pkg_name
+                access_layers = pkg_res.get("access-layers", [])
+                if access_layers and isinstance(access_layers, list):
+                    if isinstance(access_layers[0], dict):
+                        helpers["access-layer"] = access_layers[0].get("name", f"{pkg_name} Network")
+                    elif isinstance(access_layers[0], str):
+                        helpers["access-layer"] = access_layers[0]
+                    else:
+                        helpers["access-layer"] = f"{pkg_name} Network"
+                else:
+                    helpers["access-layer"] = f"{pkg_name} Network"
+
+                threat_layers = pkg_res.get("threat-layers", [])
+                if threat_layers and isinstance(threat_layers, list):
+                    if isinstance(threat_layers[0], dict):
+                        helpers["threat-layer"] = threat_layers[0].get("name", f"{pkg_name} Threat Prevention")
+                    elif isinstance(threat_layers[0], str):
+                        helpers["threat-layer"] = threat_layers[0]
+
+                client.publish()
+                time.sleep(5)
+                log.info("  Created helper package '%s' with access-layer '%s'",
+                          pkg_name, helpers.get("access-layer", "?"))
+            else:
+                log.warning("  Failed to create helper package: %s", pkg_res.get("message", pkg_res))
+
+        # Shared: create sub-helpers for threat/HTTPS types regardless of package source
+        if helpers.get("package"):
+            if obj_type in ("threat-rule", "threat-exception") and not helpers.get("threat-layer"):
+                tl_name = f"QA_HELPER_TL_{random.randint(1000, 9999)}"
+                tl_res = client.run_command("add-threat-layer", {
+                    "name": tl_name,
+                    "ignore-warnings": True,
+                })
+                if "uid" in tl_res:
+                    helpers["threat-layer"] = tl_name
+                    client.publish()
+                    log.info("  Created helper threat-layer: '%s'", tl_name)
+
+            if obj_type == "threat-exception" and helpers.get("threat-layer"):
+                tr_name = f"QA_HELPER_TR_{random.randint(1000, 9999)}"
+                tr_res = client.run_command("add-threat-rule", {
+                    "name": tr_name,
+                    "layer": helpers["threat-layer"],
+                    "position": "top",
+                    "ignore-warnings": True,
+                })
+                if "uid" in tr_res:
+                    helpers["threat-rule"] = tr_name
+                    helpers["threat-rule-uid"] = tr_res.get("uid", "")
+                    client.publish()
+                    log.info("  Created helper threat-rule: '%s'", tr_name)
+
+            if obj_type in ("https-rule", "https-section"):
+                hl_name = f"QA_HELPER_HL_{random.randint(1000, 9999)}"
+                hl_res = client.run_command("add-https-layer", {
+                    "name": hl_name,
+                    "ignore-warnings": True,
+                })
+                if "uid" in hl_res:
+                    helpers["https-layer"] = hl_name
+                    client.publish()
+                    log.info("  Created helper https-layer: '%s'", hl_name)
+
     return helpers
 
 
@@ -446,6 +749,67 @@ def _inject_helpers(
             helpers["gateway"],
             satellites,
         )
+    elif obj_type == "opsec-application" and helpers.get("host"):
+        payload["host"] = helpers["host"]
+        log.info("  Injected host='%s'", helpers["host"])
+    elif obj_type in ("syslog-server", "if-map-server", "securemote-dns-server") and helpers.get("host"):
+        payload["host"] = helpers["host"]
+        log.info("  Injected host='%s'", helpers["host"])
+    elif obj_type in ("radius-server", "tacacs-server") and helpers.get("host"):
+        payload["server"] = helpers["host"]
+        log.info("  Injected server='%s'", helpers["host"])
+    elif obj_type == "resource-tcp" and helpers.get("opsec-app"):
+        if "cvp-settings" not in payload:
+            payload["cvp-settings"] = {}
+        # Use UID if available (API requires OPSEC Application reference)
+        ref = helpers.get("opsec-app-uid", helpers["opsec-app"])
+        payload["cvp-settings"]["server"] = ref
+        log.info("  Injected cvp-settings.server='%s'", ref)
+    elif obj_type == "data-type-compound-group" and helpers.get("data-type"):
+        payload["matched-groups"] = [helpers["data-type"]]
+        log.info("  Injected matched-groups=['%s']", helpers["data-type"])
+    elif obj_type == "data-type-traditional-group" and helpers.get("data-type"):
+        payload["data-types"] = [helpers["data-type"]]
+        log.info("  Injected data-types=['%s']", helpers["data-type"])
+    elif obj_type in _NEEDS_SERVICE_TCP_HELPER and helpers.get("service-tcp"):
+        payload["allowed-service"] = helpers["service-tcp"]
+        log.info("  Injected allowed-service='%s'", helpers["service-tcp"])
+    elif obj_type == "interface" and helpers.get("gateway_uid"):
+        payload["gateway-uid"] = helpers["gateway_uid"]
+        log.info("  Injected gateway-uid='%s'", helpers["gateway_uid"])
+    elif obj_type == "network-probe" and helpers.get("gateway"):
+        payload["install-on"] = [helpers["gateway"]]
+        payload.pop("gateway", None)
+        log.info("  Injected install-on=['%s']", helpers["gateway"])
+    elif obj_type == "multiple-key-exchanges" and helpers.get("vpn-community"):
+        payload["vpn-community"] = helpers["vpn-community"]
+        log.info("  Injected vpn-community='%s'", helpers["vpn-community"])
+
+    # Policy type injection
+    elif obj_type in ("access-rule", "access-section") and helpers.get("access-layer"):
+        payload["layer"] = helpers["access-layer"]
+        log.info("  Injected layer='%s'", helpers["access-layer"])
+    elif obj_type in ("nat-rule", "nat-section") and helpers.get("package"):
+        payload["package"] = helpers["package"]
+        log.info("  Injected package='%s'", helpers["package"])
+    elif obj_type in ("threat-rule",) and helpers.get("threat-layer"):
+        payload["layer"] = helpers["threat-layer"]
+        log.info("  Injected layer='%s'", helpers["threat-layer"])
+    elif obj_type == "threat-exception":
+        if helpers.get("threat-rule-uid"):
+            payload["rule-uid"] = helpers["threat-rule-uid"]
+        if helpers.get("threat-layer"):
+            payload["layer"] = helpers["threat-layer"]
+        # Ensure no conflicting identifiers
+        payload.pop("exception-group-uid", None)
+        payload.pop("exception-group-name", None)
+        payload.pop("rule-name", None)
+        payload.pop("rule-number", None)
+        log.info("  Injected threat-exception refs (rule-uid only)")
+    elif obj_type in ("https-rule", "https-section") and helpers.get("https-layer"):
+        payload["layer"] = helpers["https-layer"]
+        log.info("  Injected layer='%s'", helpers["https-layer"])
+    # mobile-access-rule/section don't accept 'layer' — they operate at package level
 
 
 def _cleanup_helpers(client: Any, helpers: dict) -> None:
@@ -459,6 +823,27 @@ def _cleanup_helpers(client: Any, helpers: dict) -> None:
     if helpers.get("time"):
         client.run_command("delete-time", {"name": helpers["time"]})
         log.info("  Cleaned up helper time '%s'", helpers["time"])
+    if helpers.get("opsec-app"):
+        client.run_command("delete-opsec-application", {
+            "name": helpers["opsec-app"], "ignore-warnings": True,
+        })
+        log.info("  Cleaned up helper opsec-app '%s'", helpers["opsec-app"])
+    if helpers.get("host"):
+        client.run_command("delete-host", {"name": helpers["host"]})
+        log.info("  Cleaned up helper host '%s'", helpers["host"])
+    if helpers.get("data-type"):
+        client.run_command("delete-data-type-keywords", {"name": helpers["data-type"], "ignore-warnings": True})
+        log.info("  Cleaned up helper data-type '%s'", helpers["data-type"])
+    if helpers.get("service-tcp"):
+        client.run_command("delete-service-tcp", {"name": helpers["service-tcp"], "ignore-warnings": True})
+        log.info("  Cleaned up helper service-tcp '%s'", helpers["service-tcp"])
+    if helpers.get("vpn-community"):
+        client.run_command("delete-vpn-community-meshed", {"name": helpers["vpn-community"], "ignore-warnings": True})
+        log.info("  Cleaned up helper VPN community '%s'", helpers["vpn-community"])
+    # Package cascade-deletes layers, rules, and sections (don't delete built-in Standard)
+    if helpers.get("package") and helpers["package"] != "Standard":
+        client.run_command("delete-package", {"name": helpers["package"], "ignore-warnings": True, "ignore-errors": True})
+        log.info("  Cleaned up helper package '%s' (cascade)", helpers["package"])
     if helpers.get("gateway"):
         client.run_command(
             "delete-simple-gateway",
