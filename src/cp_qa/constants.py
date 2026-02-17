@@ -18,10 +18,12 @@ API_SPEC_URL = (
 # Report / manifest paths (relative to CWD)
 # ---------------------------------------------------------------------------
 
-MANIFEST_PATH = "reports/demo_manifest.json"
-QA_RAW_DATA_PATH = "reports/QA_RAW_DATA.json"
-QA_SUMMARY_REPORT_PATH = "reports/QA_SUMMARY_REPORT.md"
-QA_EXAMPLES_DIR = "reports/examples"
+MANIFEST_PATH = "output/demo_manifest.json"
+QA_RAW_DATA_PATH = "output/QA_RAW_DATA.json"
+QA_SUMMARY_REPORT_PATH = "output/QA_SUMMARY_REPORT.md"
+QA_PAYLOADS_DIR = "output/payloads"
+BLUEPRINT_DIR = "blueprints"
+DEFAULT_BLUEPRINT_PATH = "blueprints/demo_policy_blueprint.json"
 
 # ---------------------------------------------------------------------------
 # Naming prefixes
@@ -196,6 +198,11 @@ NETWORK_OBJECTS_TYPES: list[str] = [
     # Known-slow types (run last to avoid blocking other tests)
     "simple-cluster",
     "lsv-profile",
+    # Non-standard lifecycle types (custom handlers)
+    "threat-protections",
+    "web-console-statistics",
+    "objects-batch",
+    "rules-batch",
 ]
 
 # ---------------------------------------------------------------------------

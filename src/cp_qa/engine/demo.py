@@ -1,8 +1,9 @@
-"""Demo mode operations: create, cleanup, services, and policy.
+"""Demo mode operations: create, cleanup, topology, services, and policy.
 
-Demo mode creates one representative object for every supported type,
-a set of service objects, and a Check Point recommended security policy.
-Everything is tracked in a manifest file for later cleanup.
+Demo mode creates a realistic lab topology based on the Ansible Dynamic
+Policy Demo project — hosts, networks, groups, feeds, services, and a
+multi-layer access policy.  Everything is tracked in a manifest file for
+later cleanup.
 
 Usage (via CLI)::
 
@@ -13,12 +14,11 @@ Usage (via CLI)::
 from __future__ import annotations
 
 import random
-import time
+import time as _time
 from typing import Any
 
 from cp_qa.constants import (
     CLEANUP_ORDER,
-    DEMO_PREFIX,
     DISCOVERABLE_PREFIXES,
     DISCOVERABLE_TYPES,
     MAX_RETRIES,
@@ -289,10 +289,304 @@ def discover_demo_objects(client: Any) -> list[dict]:
 # Demo services
 # =========================================================================
 
+def create_demo_topology(client: Any) -> list[dict]:
+    """Create realistic network topology objects for the demo environment.
+
+    Based on the Dynamic Policy Demo Ansible project — creates hosts,
+    networks, groups, network feeds, and a gateway that form a coherent
+    lab topology.
+
+    Args:
+        client: Authenticated API client.
+
+    Returns:
+        List of manifest entries for all created topology objects.
+    """
+    log.info("--- DEMO: Creating network topology ---")
+    manifest_entries: list[dict] = []
+
+    # --- Hosts (SMS is a pre-existing checkpoint-host, not created here) ---
+    hosts = [
+        {
+            "cmd": "add-host",
+            "type": "host",
+            "payload": {
+                "name": "DNS_8_8_4_4",
+                "ipv4-address": "8.8.4.4",
+                "color": "blue",
+                "comments": "Google Public DNS (secondary)",
+                "ignore-warnings": True,
+            },
+        },
+        {
+            "cmd": "add-host",
+            "type": "host",
+            "payload": {
+                "name": "DNS_8_8_8_8",
+                "ipv4-address": "8.8.8.8",
+                "color": "blue",
+                "comments": "Google Public DNS (primary)",
+                "ignore-warnings": True,
+            },
+        },
+        {
+            "cmd": "add-host",
+            "type": "host",
+            "payload": {
+                "name": "jump_host",
+                "ipv4-address": "10.1.1.200",
+                "color": "green",
+                "comments": "Management jump host",
+                "ignore-warnings": True,
+            },
+        },
+        {
+            "cmd": "add-host",
+            "type": "host",
+            "payload": {
+                "name": "kali_linux",
+                "ipv4-address": "203.0.113.5",
+                "color": "red",
+                "comments": "External pentesting host",
+                "ignore-warnings": True,
+            },
+        },
+        {
+            "cmd": "add-host",
+            "type": "host",
+            "payload": {
+                "name": "win_client",
+                "ipv4-address": "10.1.1.222",
+                "color": "cyan",
+                "comments": "Windows workstation (static NAT to 203.0.113.222)",
+                "nat-settings": {
+                    "auto-rule": True,
+                    "method": "static",
+                    "ipv4-address": "203.0.113.222",
+                },
+                "ignore-warnings": True,
+            },
+        },
+        {
+            "cmd": "add-host",
+            "type": "host",
+            "payload": {
+                "name": "win_server",
+                "ipv4-address": "10.1.2.250",
+                "color": "orange",
+                "comments": "Windows server in DMZ (static NAT to 203.0.113.250)",
+                "nat-settings": {
+                    "auto-rule": True,
+                    "method": "static",
+                    "ipv4-address": "203.0.113.250",
+                },
+                "ignore-warnings": True,
+            },
+        },
+    ]
+
+    for obj in hosts:
+        manifest_entries.extend(_add_demo_object(client, obj))
+
+    log.info("  Publishing hosts...")
+    client.publish()
+
+    # --- Networks ---
+    networks = [
+        {
+            "cmd": "add-network",
+            "type": "network",
+            "payload": {
+                "name": "net_10_1_1_0_24",
+                "subnet4": "10.1.1.0",
+                "mask-length4": 24,
+                "color": "forest green",
+                "comments": "LAN — Users (10.1.1.0/24)",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-network",
+            "type": "network",
+            "payload": {
+                "name": "net_10_1_2_0_24",
+                "subnet4": "10.1.2.0",
+                "mask-length4": 24,
+                "color": "dark green",
+                "comments": "DMZ — Servers (10.1.2.0/24)",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-network",
+            "type": "network",
+            "payload": {
+                "name": "net_10_1_3_0_24",
+                "subnet4": "10.1.3.0",
+                "mask-length4": 24,
+                "color": "sea green",
+                "comments": "Management Network (10.1.3.0/24)",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-network",
+            "type": "network",
+            "payload": {
+                "name": "net_10_1_4_0_24",
+                "subnet4": "10.1.4.0",
+                "mask-length4": 24,
+                "color": "olive",
+                "comments": "IoT / Guest Network (10.1.4.0/24)",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-network",
+            "type": "network",
+            "payload": {
+                "name": "net_203_0_113_0_24",
+                "subnet4": "203.0.113.0",
+                "mask-length4": 24,
+                "color": "red",
+                "comments": "External / WAN (203.0.113.0/24)",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+    ]
+
+    for obj in networks:
+        manifest_entries.extend(_add_demo_object(client, obj))
+
+    log.info("  Publishing networks...")
+    client.publish()
+
+    # --- Group ---
+    grp = {
+        "cmd": "add-group",
+        "type": "group",
+        "payload": {
+            "name": "internal_nets",
+            "members": [
+                "net_10_1_1_0_24",
+                "net_10_1_2_0_24",
+                "net_10_1_3_0_24",
+                "net_10_1_4_0_24",
+            ],
+            "color": "forest green",
+            "comments": "All internal networks",
+            "ignore-warnings": True,
+        },
+    }
+    manifest_entries.extend(_add_demo_object(client, grp))
+
+    # --- Network Feeds ---
+    feeds = [
+        {
+            "cmd": "add-network-feed",
+            "type": "network-feed",
+            "payload": {
+                "name": "internal_DNS_feed_json",
+                "feed-url": "http://10.1.1.200:5000/get-json",
+                "feed-format": "JSON",
+                "feed-type": "IP Address",
+                "color": "blue",
+                "comments": "Internal DNS server addresses (JSON feed from jump_host)",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-network-feed",
+            "type": "network-feed",
+            "payload": {
+                "name": "public_DNS_feed_list",
+                "feed-url": "http://10.1.1.200:5000/get-list",
+                "feed-format": "Flat List",
+                "feed-type": "IP Address",
+                "color": "blue",
+                "comments": "Public DNS resolvers",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-network-feed",
+            "type": "network-feed",
+            "payload": {
+                "name": "attackers_feed_list",
+                "feed-url": "http://10.1.1.200:5000/get-attacker",
+                "feed-format": "Flat List",
+                "feed-type": "IP Address",
+                "color": "red",
+                "comments": "Known attacker IPs",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-network-feed",
+            "type": "network-feed",
+            "payload": {
+                "name": "targets_feed_list",
+                "feed-url": "http://10.1.1.200:5000/get-target",
+                "feed-format": "Flat List",
+                "feed-type": "IP Address",
+                "color": "orange",
+                "comments": "Protected target IPs",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+    ]
+
+    for obj in feeds:
+        manifest_entries.extend(_add_demo_object(client, obj))
+
+    # --- Gateway ---
+    gw = {
+        "cmd": "add-simple-gateway",
+        "type": "simple-gateway",
+        "payload": {
+            "name": "GW",
+            "ipv4-address": "10.1.1.81",
+            "color": "dark blue",
+            "comments": "Perimeter gateway",
+            "firewall": True,
+            "vpn": True,
+            "application-control": True,
+            "url-filtering": True,
+            "interfaces": [
+                {"name": "eth0", "ipv4-address": "10.1.1.81", "ipv4-network-mask": "255.255.255.0", "topology": "internal", "anti-spoofing": True},
+                {"name": "eth1", "ipv4-address": "10.1.2.81", "ipv4-network-mask": "255.255.255.0", "topology": "internal", "anti-spoofing": True},
+                {"name": "eth2", "ipv4-address": "10.1.3.81", "ipv4-network-mask": "255.255.255.0", "topology": "internal", "anti-spoofing": True},
+                {"name": "eth3", "ipv4-address": "10.1.4.81", "ipv4-network-mask": "255.255.255.0", "topology": "internal", "anti-spoofing": True},
+                {"name": "eth4", "ipv4-address": "203.0.113.81", "ipv4-network-mask": "255.255.255.0", "topology": "external", "anti-spoofing": True},
+            ],
+            "ignore-warnings": True,
+            "ignore-errors": True,
+        },
+    }
+    manifest_entries.extend(_add_demo_object(client, gw))
+
+    log.info("  Publishing topology...")
+    client.publish()
+
+    created = len([e for e in manifest_entries if e.get("uid")])
+    log.info("Topology complete: %d objects created", created)
+    return manifest_entries
+
+
 def create_demo_services(client: Any) -> list[dict]:
     """Create service objects for the demo policy.
 
-    Creates TCP, UDP, ICMP services and a service group.
+    Creates individual TCP/UDP/ICMP services and service groups that
+    mirror the Ansible Dynamic Policy Demo topology.
 
     Args:
         client: Authenticated API client.
@@ -302,70 +596,16 @@ def create_demo_services(client: Any) -> list[dict]:
     """
     log.info("--- DEMO: Creating service objects ---")
 
+    # Only one custom service — everything else uses built-in CP services
     services = [
         {
             "cmd": "add-service-tcp",
             "type": "service-tcp",
             "payload": {
-                "name": "DEMO_SVC_HTTP",
-                "port": "80",
-                "comments": "HTTP service",
-                "color": "red",
-                "ignore-warnings": True,
-            },
-        },
-        {
-            "cmd": "add-service-tcp",
-            "type": "service-tcp",
-            "payload": {
-                "name": "DEMO_SVC_HTTPS",
-                "port": "443",
-                "comments": "HTTPS service",
-                "color": "red",
-                "ignore-warnings": True,
-            },
-        },
-        {
-            "cmd": "add-service-tcp",
-            "type": "service-tcp",
-            "payload": {
-                "name": "DEMO_SVC_SSH",
-                "port": "22",
-                "comments": "SSH service",
-                "color": "orange",
-                "ignore-warnings": True,
-            },
-        },
-        {
-            "cmd": "add-service-tcp",
-            "type": "service-tcp",
-            "payload": {
-                "name": "DEMO_SVC_SMTP",
-                "port": "25",
-                "comments": "SMTP service",
-                "color": "yellow",
-                "ignore-warnings": True,
-            },
-        },
-        {
-            "cmd": "add-service-udp",
-            "type": "service-udp",
-            "payload": {
-                "name": "DEMO_SVC_DNS",
-                "port": "53",
-                "comments": "DNS service",
-                "color": "blue",
-                "ignore-warnings": True,
-            },
-        },
-        {
-            "cmd": "add-service-icmp",
-            "type": "service-icmp",
-            "payload": {
-                "name": "DEMO_SVC_PING",
-                "icmp-type": 8,
-                "comments": "ICMP Echo Request",
-                "color": "aquamarine",
+                "name": "LDAP_TCP_135",
+                "port": "135",
+                "comments": "LDAP / RPC Endpoint Mapper",
+                "color": "purple",
                 "ignore-warnings": True,
             },
         },
@@ -373,44 +613,55 @@ def create_demo_services(client: Any) -> list[dict]:
 
     manifest_entries: list[dict] = []
     for svc in services:
-        res = client.run_command(svc["cmd"], svc["payload"])
-        name = svc["payload"]["name"]
-        if "uid" in res:
-            log.info("  PASS %s (%s)", name, svc["type"])
-            manifest_entries.append(
-                {
-                    "type": svc["type"],
-                    "name": name,
-                    "uid": res["uid"],
-                    "payload": svc["payload"],
-                }
-            )
-        else:
-            log.error("  FAIL %s: %s", name, res.get("message", res))
+        manifest_entries.extend(_add_demo_object(client, svc))
 
-    # Service group
-    grp_payload = {
-        "name": "DEMO_SVC_WEB_GROUP",
-        "members": ["DEMO_SVC_HTTP", "DEMO_SVC_HTTPS"],
-        "comments": "Web services group",
-        "color": "red",
-        "ignore-warnings": True,
-    }
-    res = client.run_command("add-service-group", grp_payload)
-    if "uid" in res:
-        log.info("  PASS DEMO_SVC_WEB_GROUP (service-group)")
-        manifest_entries.append(
-            {
-                "type": "service-group",
-                "name": "DEMO_SVC_WEB_GROUP",
-                "uid": res["uid"],
-                "payload": grp_payload,
-            }
-        )
-    else:
-        log.error(
-            "  FAIL DEMO_SVC_WEB_GROUP: %s", res.get("message", res)
-        )
+    # Service groups — mix of custom service and built-in CP services
+    groups = [
+        {
+            "cmd": "add-service-group",
+            "type": "service-group",
+            "payload": {
+                "name": "LDAP_all",
+                "members": [
+                    "ldap",
+                    "ldap-ssl",
+                    "ldap_udp",
+                    "microsoft-ds",
+                    "microsoft-ds-udp",
+                    "Kerberos_v5_TCP",
+                    "Kerberos_v5_UDP",
+                    "LDAP_TCP_135",
+                ],
+                "comments": "LDAP + Kerberos + RPC services",
+                "color": "purple",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+        {
+            "cmd": "add-service-group",
+            "type": "service-group",
+            "payload": {
+                "name": "mail_services",
+                "members": [
+                    "pop-2",
+                    "pop-3",
+                    "POP3S",
+                    "imap",
+                    "IMAP-SSL",
+                    "smtp",
+                    "SMTPS",
+                ],
+                "comments": "Mail services (POP + IMAP + SMTP)",
+                "color": "yellow",
+                "ignore-warnings": True,
+                "ignore-errors": True,
+            },
+        },
+    ]
+
+    for grp in groups:
+        manifest_entries.extend(_add_demo_object(client, grp))
 
     log.info("Services created: %d", len(manifest_entries))
     return manifest_entries
@@ -421,219 +672,372 @@ def create_demo_services(client: Any) -> list[dict]:
 # =========================================================================
 
 def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
-    """Create a Check Point recommended security policy using all demo objects.
+    """Create a realistic security policy based on the Ansible Dynamic Policy Demo.
 
-    Creates a policy package and populates it with access rules that
-    follow Check Point best practices (management access, stealth rule,
-    cleanup rule, etc.).
+    Creates a policy package with:
+    - Network layer with 5 sections and 10 rules
+    - Inline DNS layer with 3 rules
+    All rules reference the topology objects created by
+    :func:`create_demo_topology` and :func:`create_demo_services`.
 
     Args:
         client:   Authenticated API client.
-        manifest: Current manifest with all created objects and services.
+        manifest: Current manifest (unused — objects are referenced by name).
 
     Returns:
         List of manifest entries for the policy package.
     """
-    log.info("--- DEMO: Creating recommended policy ---")
+    log.info("--- DEMO: Creating security policy ---")
 
-    pkg_name = "DEMO_Policy"
-    res = client.run_command(
-        "add-package",
-        {
-            "name": pkg_name,
-            "comments": "Check Point recommended policy — created by CP API QA Tool",
-            "access": True,
-            "threat-prevention": False,
-        },
-    )
+    # --- Package (with retry for transient server errors) ---
+
+
+    # --- Create or find existing package (try show-package first) ---
+    pkg_name = "Standard"
+    pkg_created = False
+    res: dict = {}
+
+    # Check if package already exists
+    res = client.run_command("show-package", {
+        "name": pkg_name, "details-level": "full",
+    })
+    if "uid" in res:
+        log.info("  Using existing package: %s", pkg_name)
+    else:
+        for attempt in range(3):
+            res = client.run_command(
+                "add-package",
+                {
+                    "name": pkg_name,
+                    "comments": "Training Lab Policy — configured by CP API QA Tool",
+                    "access": True,
+                    "threat-prevention": False,
+                    "ignore-warnings": True,
+                },
+            )
+            if "uid" in res:
+                pkg_created = True
+                break
+            msg = str(res.get("message", ""))
+            transient = any(
+                t in msg.lower()
+                for t in ("failed to execute", "rev_constraint", "null pointer",
+                           "eclipselink", "invocationtargetexception")
+            )
+            if transient and attempt < 2:
+                log.warning("  RETRY package (attempt %d): %s", attempt + 1, msg)
+                _time.sleep(5)
+                continue
+            break
+
     if "uid" not in res:
         log.error(
-            "Failed to create policy package: %s", res.get("message", res)
+            "Failed to create/find policy package: %s", res.get("message", res)
         )
         return []
 
-    log.info("  PASS Policy package: %s", pkg_name)
-    
-    # Ensure package is published so layers are fully initialized
-    client.publish()
-    
-    # Extract the actual access layer name from the created package
-    # Check Point usually creates 'PackageName Network' but we should be sure.
+    if pkg_created:
+        log.info("  PASS Policy package created: %s", pkg_name)
+
+    # Extract the Network access layer name
     access_layers = res.get("access-layers", [])
-    if access_layers and isinstance(access_layers, list):
-        layer_name = access_layers[0].get("name", f"{pkg_name} Network")
-    else:
-        layer_name = f"{pkg_name} Network"
-        
+    if isinstance(access_layers, dict):
+        access_layers = access_layers.get("add", access_layers.get("objects", []))
+        if not isinstance(access_layers, list):
+            access_layers = [access_layers] if isinstance(access_layers, dict) else []
+    layer_name = None
+    if isinstance(access_layers, list) and access_layers:
+        first = access_layers[0]
+        layer_name = first.get("name") if isinstance(first, dict) else None
+    if not layer_name:
+        for candidate in [f"{pkg_name} Network", "Network", pkg_name]:
+            check = client.run_command("show-access-layer", {"name": candidate})
+            if "uid" in check:
+                layer_name = candidate
+                break
+        if not layer_name:
+            layer_name = f"{pkg_name} Network"
     log.info("  Using access layer: %s", layer_name)
 
-    manifest_entries = [
-        {"type": "package", "name": pkg_name, "uid": res["uid"], "payload": {}}
-    ]
+    manifest_entries: list[dict] = []
+    if pkg_created:
+        manifest_entries.append(
+            {"type": "package", "name": pkg_name, "uid": res["uid"], "payload": {}}
+        )
 
-    # Build lookup: type -> first object name
-    obj_lookup: dict[str, str] = {}
-    for entry in manifest:
-        t = entry["type"]
-        if entry.get("uid") and t not in obj_lookup:
-            obj_lookup[t] = entry["name"]
+    # Publish package first (separate session avoids rev_constraint DB error)
+    client.publish()
 
-    def obj(type_name: str, fallback: str = "any") -> str:
-        return obj_lookup.get(type_name, fallback)
+    # Enable Application Control + URL Filtering on the access layer
+    set_res = client.run_command("set-access-layer", {
+        "name": layer_name,
+        "applications-and-url-filtering": True,
+        "ignore-warnings": True,
+    })
+    if "uid" in set_res:
+        log.info("  Layer settings: applications-and-url-filtering enabled")
+    else:
+        log.warning("  Could not enable AppControl+URLFiltering: %s", set_res.get("message", ""))
+    client.publish()
 
-    # Check Point recommended access rules
-    rules = [
+    # Delete the default "Cleanup rule" that Check Point auto-creates at
+    # position 1 (Drop/Any/Any, Track: None).  If left in place it blocks
+    # all traffic before our custom rules are evaluated.
+    log.info("  Removing default Cleanup rule from %s...", layer_name)
+    try:
+        rb = client.run_command("show-access-rulebase", {
+            "name": layer_name, "limit": 10, "use-object-dictionary": False,
+        })
+        for obj in rb.get("rulebase", []):
+            if obj.get("type") == "access-rule" and obj.get("name") == "Cleanup rule":
+                client.run_command("delete-access-rule", {
+                    "uid": obj["uid"], "layer": layer_name,
+                })
+                log.info("    Deleted default Cleanup rule (uid: %s)", obj["uid"])
+                break
+        client.publish()
+    except Exception as exc:
+        log.warning("  Could not remove default Cleanup rule: %s", exc)
+
+    # --- Inline DNS Layer (after publish, with retry) ---
+    dns_layer_name = "DNS_Layer"
+    dns_layer_ok = False
+    for attempt in range(3):
+        res = client.run_command(
+            "add-access-layer",
+            {
+                "name": dns_layer_name,
+                "add-default-rule": False,
+                "implicit-cleanup-action": "drop",
+                "comments": "Inline DNS inspection layer",
+                "color": "blue",
+                "ignore-warnings": True,
+            },
+        )
+        if "uid" in res:
+            log.info("  PASS Inline layer: %s", dns_layer_name)
+            manifest_entries.append(
+                {"type": "access-layer", "name": dns_layer_name, "uid": res["uid"], "payload": {}}
+            )
+            dns_layer_ok = True
+            break
+        msg = str(res.get("message", ""))
+        if attempt < 2:
+            log.warning("  RETRY DNS layer (attempt %d): %s", attempt + 1, msg)
+            _time.sleep(3)
+            continue
+        log.error("  FAIL Inline layer %s: %s", dns_layer_name, msg)
+
+    client.publish()
+
+    # --- DNS Layer rules ---
+    dns_rules = [
         {
-            "name": "Management Access",
-            "source": obj("network"),
-            "destination": obj("checkpoint-host"),
-            "service": ["DEMO_SVC_HTTPS", "DEMO_SVC_SSH"],
+            "name": "Internal DNS Server",
+            "layer": dns_layer_name,
+            "position": "top",
+            "source": ["net_203_0_113_0_24", "internal_nets"],
+            "destination": "internal_DNS_feed_json",
+            "service": "any",
             "action": "Accept",
             "track": {"type": "Log"},
-            "comments": "Allow management access to SMS — CP Best Practice",
+            "comments": "Allow specified networks to reach internal DNS servers",
+        },
+        {
+            "name": "Public DNS Servers",
+            "layer": dns_layer_name,
+            "position": "bottom",
+            "source": ["win_client", "GW", "SMS", "win_server"],
+            "destination": "public_DNS_feed_list",
+            "service": "any",
+            "action": "Accept",
+            "track": {"type": "Log"},
+            "comments": "Allow specified hosts to reach public DNS resolvers",
+        },
+        {
+            "name": "DNS log and drop",
+            "layer": dns_layer_name,
+            "position": "bottom",
+            "source": "any",
+            "destination": "any",
+            "service": "any",
+            "action": "Drop",
+            "track": {"type": "Log"},
+            "comments": "Drop and log all other DNS traffic",
+        },
+    ]
+
+    if dns_layer_ok:
+        dns_created = _add_rules(client, dns_rules, "DNS Layer")
+    else:
+        dns_created = 0
+        log.warning("  Skipping DNS rules — layer creation failed")
+    client.publish()
+
+    # --- Network Layer: sections + rules (all use position: bottom) ---
+    net_items: list[dict] = [
+        # ── Section: Management ──
+        {
+            "_section": True,
+            "name": "Management",
+            "layer": layer_name,
+            "position": "bottom",
+        },
+        {
+            "name": "Sillent Drop",
+            "layer": layer_name,
+            "position": "bottom",
+            "source": "any",
+            "destination": "any",
+            "service": ["bootp", "NBT", "nbsession", "nbname", "nbdatagram"],
+            "action": "Drop",
+            "track": {"type": "None"},
+            "comments": "Silently drop noisy broadcast traffic",
+        },
+        {
+            "name": "CP Updates",
+            "layer": layer_name,
+            "position": "bottom",
+            "source": ["GW", "SMS"],
+            "destination": "any",
+            "service": ["http", "https", "HTTP_and_HTTPS_proxy"],
+            "action": "Accept",
+            "track": {"type": "Log"},
+            "comments": "Allow gateway and SMS to fetch updates",
+        },
+        {
+            "name": "Management",
+            "layer": layer_name,
+            "position": "bottom",
+            "source": ["jump_host", "win_client", "SMS", "GW"],
+            "destination": ["GW", "SMS"],
+            "service": ["ssh_version_2", "https"],
+            "action": "Accept",
+            "track": {"type": "Log"},
+            "comments": "Allow management access to gateway and SMS",
         },
         {
             "name": "Stealth Rule",
+            "layer": layer_name,
+            "position": "bottom",
             "source": "any",
-            "destination": obj("simple-gateway"),
+            "destination": "GW",
             "service": "any",
             "action": "Drop",
             "track": {"type": "Log"},
-            "comments": "Block direct access to gateway — CP Best Practice",
+            "comments": "Block all other direct access to gateway",
+        },
+        # ── Section: DNS (only if inline layer was created) ──
+        *(
+            [
+                {
+                    "_section": True,
+                    "name": "DNS",
+                    "layer": layer_name,
+                    "position": "bottom",
+                },
+                {
+                    "name": "DNS Layer",
+                    "layer": layer_name,
+                    "position": "bottom",
+                    "source": "any",
+                    "destination": "any",
+                    "service": "dns",
+                    "action": "Apply Layer",
+                    "inline-layer": dns_layer_name,
+                    "track": {"type": "None"},
+                    "comments": "Inspect DNS traffic via inline DNS layer",
+                },
+            ]
+            if dns_layer_ok
+            else []
+        ),
+        # ── Section: Network Traffic ──
+        {
+            "_section": True,
+            "name": "Network Traffic",
+            "layer": layer_name,
+            "position": "bottom",
         },
         {
-            "name": "DNS Resolution",
-            "source": obj("group"),
-            "destination": obj("dns-domain", "any"),
-            "service": "DEMO_SVC_DNS",
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "comments": "Allow internal DNS resolution",
-        },
-        {
-            "name": "Outbound Web Access",
-            "source": obj("network"),
+            "name": "Outbound Traffic",
+            "layer": layer_name,
+            "position": "bottom",
+            "source": ["net_10_1_1_0_24", "net_10_1_2_0_24", "net_10_1_3_0_24"],
             "destination": "any",
-            "service": "DEMO_SVC_WEB_GROUP",
+            "service": ["http", "https", "HTTP_and_HTTPS_proxy", "icmp-requests", "quic"],
             "action": "Accept",
             "track": {"type": "Log"},
-            "comments": "Allow outbound web traffic from internal network",
+            "comments": "Allow outbound web and ICMP from internal networks",
         },
         {
-            "name": "Inbound Web Services",
-            "source": "any",
-            "destination": obj("host"),
-            "service": ["DEMO_SVC_HTTP", "DEMO_SVC_HTTPS"],
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "comments": "Allow inbound web traffic to published server",
-        },
-        {
-            "name": "Internal Network Access",
-            "source": obj("address-range"),
-            "destination": obj("network"),
-            "service": "any",
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "comments": "Allow internal address range communication",
-        },
-        {
-            "name": "Zone-Based Access",
-            "source": obj("security-zone"),
-            "destination": obj("wildcard"),
-            "service": "any",
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "comments": "Zone-based firewall policy",
-        },
-        {
-            "name": "Dynamic Object Access",
-            "source": obj("dynamic-object"),
-            "destination": obj("network"),
-            "service": "DEMO_SVC_WEB_GROUP",
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "comments": "Dynamic object-based network access",
-        },
-        {
-            "name": "Exclusion Group Block",
-            "source": obj("group-with-exclusion"),
+            "name": "Mail Services",
+            "layer": layer_name,
+            "position": "bottom",
+            "source": ["net_10_1_1_0_24", "net_10_1_2_0_24", "jump_host"],
             "destination": "any",
+            "service": "mail_services",
+            "action": "Accept",
+            "track": {"type": "Log"},
+            "comments": "Allow outbound mail traffic",
+        },
+        {
+            "name": "LDAP Services",
+            "layer": layer_name,
+            "position": "bottom",
+            "source": ["win_client", "SMS"],
+            "destination": "win_server",
+            "service": ["LDAP_all", "ntp", "tcp-high-ports"],
+            "action": "Accept",
+            "track": {"type": "Log"},
+            "comments": "Allow LDAP/NTP/RPC between client and server",
+        },
+        # ── Section: DMZ ──
+        {
+            "_section": True,
+            "name": "DMZ",
+            "layer": layer_name,
+            "position": "bottom",
+        },
+        {
+            "name": "DMZ Inbound",
+            "layer": layer_name,
+            "position": "bottom",
+            "source": "attackers_feed_list",
+            "destination": "targets_feed_list",
             "service": "any",
             "action": "Drop",
             "track": {"type": "Log"},
-            "comments": "Block traffic from excluded group members",
+            "ignore-errors": True,
+            "comments": "Block known attackers from targets (R82: dynamic_layer, R81.10: Drop)",
         },
+        # ── Section: Clean up rule ──
         {
-            "name": "VPN Interop Access",
-            "source": obj("interoperable-device"),
-            "destination": obj("network"),
-            "service": "any",
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "comments": "VPN interoperability traffic",
-        },
-        {
-            "name": "Threat Feed Block",
-            "source": obj("network-feed"),
-            "destination": "any",
-            "service": "any",
-            "action": "Drop",
-            "track": {"type": "Log"},
-            "comments": "Block known malicious IPs (TOR exit nodes)",
-        },
-        {
-            "name": "Time-Restricted SSH",
-            "source": "any",
-            "destination": obj("host"),
-            "service": "DEMO_SVC_SSH",
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "time": obj("time"),
-            "comments": "Time-restricted SSH access",
-        },
-        {
-            "name": "Multicast Traffic",
-            "source": "any",
-            "destination": obj("multicast-address-range"),
-            "service": "any",
-            "action": "Accept",
-            "track": {"type": "Log"},
-            "comments": "Allow multicast traffic",
+            "_section": True,
+            "name": "Clean up rule",
+            "layer": layer_name,
+            "position": "bottom",
         },
         {
             "name": "Cleanup Rule",
+            "layer": layer_name,
+            "position": "bottom",
             "source": "any",
             "destination": "any",
             "service": "any",
             "action": "Drop",
             "track": {"type": "Log"},
-            "comments": "Drop and log all unmatched traffic — CP Best Practice",
+            "comments": "Drop and log all unmatched traffic",
         },
     ]
 
-    created_rules = 0
-    for i, rule_def in enumerate(rules):
-        rule_def["layer"] = layer_name
-        rule_def["position"] = "bottom"
-        res = client.run_command("add-access-rule", rule_def)
-        rname = rule_def["name"]
-        if "uid" in res:
-            log.info("  PASS Rule %2d: %s", i + 1, rname)
-            created_rules += 1
-        else:
-            log.warning(
-                "  FAIL Rule %2d: %s — %s",
-                i + 1,
-                rname,
-                res.get("message", res),
-            )
+    net_created = _add_rules(client, net_items, "Network Layer")
 
+    total = dns_created + net_created
     log.info(
-        "Policy complete: %d/%d rules created in '%s'",
-        created_rules,
-        len(rules),
-        layer_name,
+        "Policy complete: %d rules/sections created in '%s'",
+        total,
+        pkg_name,
     )
     return manifest_entries
 
@@ -641,6 +1045,109 @@ def create_demo_policy(client: Any, manifest: list[dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _add_demo_object(client: Any, obj_def: dict, retries: int = 2) -> list[dict]:
+    """Create a single demo object and return manifest entries.
+
+    Retries on transient server errors (NPE, generic_server_error).
+
+    Args:
+        client:  Authenticated API client.
+        obj_def: Dict with ``cmd``, ``type``, and ``payload`` keys.
+        retries: Number of retries for transient errors.
+
+    Returns:
+        List containing one manifest entry on success, empty on failure.
+    """
+
+
+    cmd = obj_def["cmd"]
+    obj_type = obj_def["type"]
+    payload = obj_def["payload"]
+    name = payload["name"]
+
+    for attempt in range(1 + retries):
+        res = client.run_command(cmd, payload)
+        if "uid" in res:
+            log.info("  PASS %s (%s)", name, obj_type)
+            return [
+                {
+                    "type": obj_type,
+                    "name": name,
+                    "uid": res["uid"],
+                    "payload": dict(payload),
+                }
+            ]
+
+        msg = str(res.get("message", ""))
+        ml = msg.lower()
+        transient = (
+            "failed to execute" in ml
+            or "null pointer" in ml
+            or "hv000028" in ml
+            or "rev_constraint" in ml
+            or "eclipselink" in ml
+            or "invocationtargetexception" in ml
+            or "generic_server_error" in str(res.get("code", "")).lower()
+        )
+        if transient and attempt < retries:
+            log.warning("  RETRY %s (attempt %d): %s", name, attempt + 1, msg)
+            _time.sleep(3)
+            continue
+
+        log.error("  FAIL %s: %s", name, res.get("message", res))
+        return []
+
+    return []
+
+
+def _add_rules(client: Any, items: list[dict], label: str) -> int:
+    """Add access rules and sections from a definition list.
+
+    Each item is either a section (``_section: True``) or a rule.
+
+    Args:
+        client: Authenticated API client.
+        items:  List of section/rule dicts.
+        label:  Label for log messages.
+
+    Returns:
+        Number of successfully created items.
+    """
+    created = 0
+    for i, item in enumerate(items):
+        item_copy = dict(item)
+        is_section = item_copy.pop("_section", False)
+
+        if is_section:
+            cmd = "add-access-section"
+            tag = f"{label} \u00a7  {item_copy['name']}"
+        else:
+            cmd = "add-access-rule"
+            item_copy["ignore-warnings"] = True
+            tag = f"{label} #{i + 1:2d} {item_copy['name']}"
+
+        # Retry loop for transient server errors
+        for attempt in range(3):
+            res = client.run_command(cmd, item_copy)
+            if "uid" in res:
+                log.info("  PASS %s", tag)
+                created += 1
+                break
+            msg = str(res.get("message", ""))
+            transient = any(
+                t in msg.lower()
+                for t in ("failed to execute", "null pointer", "invocationtargetexception",
+                          "rev_constraint", "eclipselink")
+            )
+            if transient and attempt < 2:
+                log.warning("  RETRY %s (attempt %d): %s", tag, attempt + 1, msg)
+                _time.sleep(3)
+                continue
+            log.warning("  FAIL %s \u2014 %s", tag, msg)
+            break
+    return created
+
 
 def _make_demo_name(obj_type: str) -> str:
     """Generate a deterministic demo object name."""
@@ -740,7 +1247,7 @@ def _adaptive_demo_add(
             task_id = add_res["task-id"]
             log.info("  Async task %s — waiting...", task_id)
             for _ in range(30):
-                import time as _time
+            
 
                 _time.sleep(2)
                 task_res = client.run_command(

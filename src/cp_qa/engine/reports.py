@@ -1,11 +1,11 @@
-"""Report generation and example export.
+"""Report generation and payload export.
 
 Produces three output artefacts from lifecycle test results:
 
 1. **QA_RAW_DATA.json** — Full request/response data for every step.
 2. **QA_SUMMARY_REPORT.md** — Professional Markdown audit report with
    per-variant timing, a summary table, and distinguishing field labels.
-3. **examples/<type>/variant_N.json** — Standalone JSON payloads for
+3. **payloads/<type>/variant_N.json** — Standalone JSON payloads for
    every tested variant, ready to copy-paste into scripts or playbooks.
 """
 
@@ -221,7 +221,7 @@ def export_report(results: list[dict], file_path: str) -> None:
 
     Args:
         results:   List of result dicts from lifecycle testing.
-        file_path: Output path (e.g. ``reports/QA_RAW_DATA.json``).
+        file_path: Output path (e.g. ``output/QA_RAW_DATA.json``).
     """
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
@@ -248,7 +248,7 @@ def export_markdown_report(results: list[dict], file_path: str, *, api_version: 
 
     Args:
         results:   List of result dicts from lifecycle testing.
-        file_path: Output path (e.g. ``reports/QA_SUMMARY_REPORT.md``).
+        file_path: Output path (e.g. ``output/QA_SUMMARY_REPORT.md``).
     """
     if not results:
         log.warning("No results to export to Markdown.")
@@ -421,7 +421,7 @@ def export_examples(results: list[dict], base_dir: str, *, api_version: str = ""
 
     Args:
         results:  List of result dicts from lifecycle testing.
-        base_dir: Output directory (e.g. ``reports/examples``).
+        base_dir: Output directory (e.g. ``output/payloads``).
     """
     if not results:
         log.warning("No results to export as examples.")
@@ -486,7 +486,7 @@ def export_examples(results: list[dict], base_dir: str, *, api_version: str = ""
             json.dump(payload, fh, indent=2)
         count += 1
 
-    log.info("Exported %d example payloads to %s", count, base_dir)
+    log.info("Exported %d proven payloads to %s", count, base_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +506,7 @@ def export_per_type_reports(results: list[dict], base_dir: str, *, api_version: 
 
     Args:
         results:  List of result dicts from lifecycle testing.
-        base_dir: Examples base directory (e.g. ``reports/examples``).
+        base_dir: Payloads base directory (e.g. ``output/payloads``).
     """
     if not results:
         log.warning("No results to export per-type reports.")

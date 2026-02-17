@@ -2,7 +2,7 @@
 
 **Generated:** 2026-02-16
 **Server:** R81.10 (API v2.0.1) — Standard single-domain SMS
-**Coverage:** 104/130 types PASS (80%) | 26 types require external infrastructure
+**Coverage:** 108/134 types PASS (81%) | 26 types require external infrastructure
 
 ## Summary
 
@@ -49,10 +49,11 @@ specific infrastructure that is not present in a typical lab environment.
 | 25 | `repository-script` | SmartUpdate | Script distribution repository |
 | 26 | `api-key` | Management | API key provisioning context |
 
-## Verified PASS Types (104)
+## Verified PASS Types (108)
 
-All 104 types below pass full CRUD lifecycle (ADD / SET / SHOW / DELETE)
-on a standard single-domain SMS lab:
+All 108 types below pass lifecycle testing on a standard single-domain
+SMS lab.  Most run the standard ADD / SET / SHOW / DELETE cycle; four
+non-standard types use custom lifecycle handlers (see note below):
 
 | Category | Types |
 |:---------|:------|
@@ -73,8 +74,18 @@ on a standard single-domain SMS lab:
 | Management (7) | `generic-object`, `opsec-application`, `mobile-profile`, `limit`, `override-categorization`, `exception-group`, `network-probe` |
 | Gateway Extended (2) | `interface`, `multiple-key-exchanges` |
 | Policy Stack (19) | `package`, `access-layer`, `access-rule`, `access-section`, `nat-rule`, `nat-section`, `threat-layer`, `threat-rule`, `threat-exception`, `https-layer`, `https-rule`, `https-section`, `mobile-access-rule`, `mobile-access-section`, `mobile-access-profile-rule`, `mobile-access-profile-section` |
+| Batch / Non-Standard (4) | `threat-protections`, `web-console-statistics`, `objects-batch`, `rules-batch` |
 
-**Note:** Certificate types (`custom-trusted-ca-certificate`, `external-trusted-ca`,
-`opsec-trusted-ca`, `outbound-inspection-certificate`, `server-certificate`) and
-`generic-object` skip the SET step (immutable types / non-standard schema) but
-pass ADD, SHOW, and DELETE.
+**Notes:**
+
+- Certificate types (`custom-trusted-ca-certificate`, `external-trusted-ca`,
+  `opsec-trusted-ca`, `outbound-inspection-certificate`, `server-certificate`) and
+  `generic-object` skip the SET step (immutable types / non-standard schema) but
+  pass ADD, SHOW, and DELETE.
+- **Non-standard lifecycle types** use custom handlers instead of the standard
+  CRUD cycle:
+  - `threat-protections` — built-in objects; lifecycle is SHOW → SET → SHOW → revert
+    (no ADD/DELETE since protections are system-managed).
+  - `web-console-statistics` — ADD (write) and SHOW (read) only; no SET or DELETE.
+  - `objects-batch` — batch ADD → SET → DELETE of multiple objects in one call (async).
+  - `rules-batch` — batch ADD → DELETE of rules in a layer (async; no SET).

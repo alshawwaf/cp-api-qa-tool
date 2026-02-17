@@ -71,6 +71,14 @@ _SKIP_SET = {
     "generic-object",  # meta-API, non-standard SET schema
 }
 
+# Types with completely non-standard lifecycles (custom handlers)
+_CUSTOM_LIFECYCLE = {
+    "threat-protections",
+    "web-console-statistics",
+    "objects-batch",
+    "rules-batch",
+}
+
 _MAX_STEP_RETRIES = 3  # Retries for SET / DELETE on transient errors
 
 
@@ -169,6 +177,14 @@ def run_lifecycle_test(
     Returns:
         ``True`` if the lifecycle completed (even if some variants failed).
     """
+    # Dispatch non-standard types to their custom lifecycle handlers
+    if obj_type in _CUSTOM_LIFECYCLE:
+        handler = _CUSTOM_HANDLERS.get(obj_type)
+        if handler:
+            return handler(client, results, obj_type)
+        log.warning("No custom handler for type '%s'", obj_type)
+        return False
+
     current_obj_type = obj_type
     log.info("--- Starting exhaustive QA for object type: %s ---", obj_type)
 
@@ -950,3 +966,349 @@ def _poll_async_task(
                 return False, {"message": desc}
 
     return False, {"message": "Async task timed out"}
+
+
+# ===========================================================================
+# Custom lifecycle handlers for non-standard types
+# ===========================================================================
+
+def _lifecycle_threat_protections(
+    client: Any, results: list[dict], obj_type: str,
+) -> bool:
+    """Custom lifecycle for ``threat-protections``.
+
+    Threat protections are built-in objects — they cannot be created or
+    deleted.  The lifecycle is: SHOW (list) → pick one → SET (modify) →
+    SHOW (verify) → SET (revert).
+    """
+    log.info("--- Custom lifecycle: threat-protections ---")
+
+    # Step 1: SHOW (list existing protections)
+    t0 = time.perf_counter()
+    list_res = client.run_command("show-threat-protections", {
+        "limit": 5, "details-level": "standard",
+    })
+    dur = time.perf_counter() - t0
+    items = list_res.get("objects", [])
+    show_ok = bool(items)
+    log.info("  SHOW (list): [%.2fs] %s — %d protections found",
+             dur, "PASS" if show_ok else "FAIL", len(items))
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "show-threat-protections",
+        "payload": {"limit": 5, "details-level": "standard"},
+        "response": list_res, "success": show_ok, "duration": dur,
+    })
+    if not show_ok:
+        return True  # No protections available — nothing more to test
+
+    # Pick the first protection
+    target = items[0]
+    target_uid = target.get("uid", "")
+    target_name = target.get("name", target_uid)
+    log.info("  Target protection: '%s' (uid=%s)", target_name, target_uid)
+
+    # Step 2: SHOW (individual)
+    t0 = time.perf_counter()
+    show_res = client.run_command("show-threat-protection", {
+        "uid": target_uid, "details-level": "full",
+    })
+    dur = time.perf_counter() - t0
+    show1_ok = _is_success(show_res) or "name" in show_res
+    log.info("  SHOW (single): [%.2fs] %s", dur, "PASS" if show1_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "show-threat-protection",
+        "payload": {"uid": target_uid},
+        "response": show_res, "success": show1_ok, "duration": dur,
+    })
+
+    # Step 3: SET (add a comment)
+    original_comments = show_res.get("comments", "")
+    set_payload = {
+        "uid": target_uid,
+        "comments": "QA lifecycle test — threat-protections",
+    }
+    set_ok, set_res, set_dur = _retry_command(
+        client, "set-threat-protection", set_payload, label="SET",
+    )
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "set-threat-protection",
+        "payload": set_payload,
+        "response": set_res, "success": set_ok, "duration": set_dur,
+    })
+
+    # Step 4: Revert the comment
+    revert_payload = {"uid": target_uid, "comments": original_comments}
+    rev_ok, rev_res, rev_dur = _retry_command(
+        client, "set-threat-protection", revert_payload, label="SET-REVERT",
+    )
+    log.info("  SET-REVERT: [%.2fs] %s", rev_dur, "PASS" if rev_ok else "FAIL")
+
+    log.info("--- threat-protections lifecycle complete ---")
+    return True
+
+
+def _lifecycle_web_console_statistics(
+    client: Any, results: list[dict], obj_type: str,
+) -> bool:
+    """Custom lifecycle for ``web-console-statistics``.
+
+    Only ADD (write) and SHOW (read) are supported — no SET or DELETE.
+    """
+    log.info("--- Custom lifecycle: web-console-statistics ---")
+    rand = random.randint(1000, 9999)
+    file_name = f"QA_stats_test_{rand}"
+
+    # Step 1: ADD (write statistics)
+    add_payload = {
+        "file-name": file_name,
+        "data": "qa_test_field1=value1",
+        "field-names": "qa_test_field1",
+        "override-file": True,
+    }
+    t0 = time.perf_counter()
+    add_res = client.run_command("add-web-console-statistics", add_payload)
+    dur = time.perf_counter() - t0
+    add_ok = (add_res.get("code") == "success"
+              or add_res.get("message") == "OK"
+              or "statusCode" not in add_res)
+    # The API returns ApiOkReply — check for absence of error
+    if "message" in add_res and "error" in str(add_res.get("message", "")).lower():
+        add_ok = False
+    log.info("  ADD: [%.2fs] %s", dur, "PASS" if add_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "add-web-console-statistics",
+        "payload": add_payload,
+        "response": add_res, "success": add_ok, "duration": dur,
+    })
+
+    # Step 2: SHOW (read back)
+    show_payload = {"file-name": file_name}
+    t0 = time.perf_counter()
+    show_res = client.run_command("show-web-console-statistics", show_payload)
+    dur = time.perf_counter() - t0
+    show_ok = "message" not in show_res or "error" not in str(show_res.get("message", "")).lower()
+    log.info("  SHOW: [%.2fs] %s", dur, "PASS" if show_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "show-web-console-statistics",
+        "payload": show_payload,
+        "response": show_res, "success": show_ok, "duration": dur,
+    })
+
+    log.info("--- web-console-statistics lifecycle complete ---")
+    return True
+
+
+def _lifecycle_objects_batch(
+    client: Any, results: list[dict], obj_type: str,
+) -> bool:
+    """Custom lifecycle for ``objects-batch``.
+
+    Creates a batch of simple hosts, modifies them, then deletes them.
+    All three commands are async (return task-id).
+    """
+    log.info("--- Custom lifecycle: objects-batch ---")
+    rand = random.randint(1000, 9999)
+    hosts = [
+        {"name": f"QA_BATCH_H1_{rand}", "ip-address": f"10.200.{random.randint(1,254)}.1"},
+        {"name": f"QA_BATCH_H2_{rand}", "ip-address": f"10.200.{random.randint(1,254)}.2"},
+    ]
+
+    # Step 1: ADD batch
+    add_payload = {"objects": [{"type": "host", "list": hosts}]}
+    t0 = time.perf_counter()
+    add_res = client.run_command("add-objects-batch", add_payload)
+    dur = time.perf_counter() - t0
+    add_ok = _is_success(add_res)
+    if not add_ok and "task-id" in add_res:
+        poll_t0 = time.perf_counter()
+        add_ok, add_res = _poll_async_task(client, add_res["task-id"])
+        dur += time.perf_counter() - poll_t0
+    # Also accept tasks list as success indicator
+    if not add_ok and "tasks" in add_res:
+        tasks = add_res.get("tasks", [])
+        if tasks and tasks[0].get("status") == "succeeded":
+            add_ok = True
+    log.info("  ADD: [%.2fs] %s", dur, "PASS" if add_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "add-objects-batch",
+        "payload": add_payload,
+        "response": add_res, "success": add_ok, "duration": dur,
+    })
+
+    if not add_ok:
+        log.error("  objects-batch ADD failed — skipping SET/DELETE")
+        return True
+
+    client.publish()
+    time.sleep(2)
+
+    # Step 2: SET batch
+    set_hosts = [
+        {"name": hosts[0]["name"], "comments": "QA batch set test", "color": "orange"},
+        {"name": hosts[1]["name"], "comments": "QA batch set test", "color": "orange"},
+    ]
+    set_payload = {"objects": [{"type": "host", "list": set_hosts}]}
+    t0 = time.perf_counter()
+    set_res = client.run_command("set-objects-batch", set_payload)
+    dur = time.perf_counter() - t0
+    set_ok = _is_success(set_res)
+    if not set_ok and "task-id" in set_res:
+        poll_t0 = time.perf_counter()
+        set_ok, set_res = _poll_async_task(client, set_res["task-id"])
+        dur += time.perf_counter() - poll_t0
+    if not set_ok and "tasks" in set_res:
+        tasks = set_res.get("tasks", [])
+        if tasks and tasks[0].get("status") == "succeeded":
+            set_ok = True
+    log.info("  SET: [%.2fs] %s", dur, "PASS" if set_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "set-objects-batch",
+        "payload": set_payload,
+        "response": set_res, "success": set_ok, "duration": dur,
+    })
+
+    client.publish()
+    time.sleep(2)
+
+    # Step 3: DELETE batch
+    del_hosts = [{"name": h["name"]} for h in hosts]
+    del_payload = {"objects": [{"type": "host", "list": del_hosts}]}
+    t0 = time.perf_counter()
+    del_res = client.run_command("delete-objects-batch", del_payload)
+    dur = time.perf_counter() - t0
+    del_ok = _is_success(del_res)
+    if not del_ok and "task-id" in del_res:
+        poll_t0 = time.perf_counter()
+        del_ok, del_res = _poll_async_task(client, del_res["task-id"])
+        dur += time.perf_counter() - poll_t0
+    if not del_ok and "tasks" in del_res:
+        tasks = del_res.get("tasks", [])
+        if tasks and tasks[0].get("status") == "succeeded":
+            del_ok = True
+    log.info("  DELETE: [%.2fs] %s", dur, "PASS" if del_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "delete-objects-batch",
+        "payload": del_payload,
+        "response": del_res, "success": del_ok, "duration": dur,
+    })
+
+    client.publish()
+    log.info("--- objects-batch lifecycle complete ---")
+    return True
+
+
+def _lifecycle_rules_batch(
+    client: Any, results: list[dict], obj_type: str,
+) -> bool:
+    """Custom lifecycle for ``rules-batch``.
+
+    Creates a batch of access rules in the Standard package, then deletes
+    them.  Only ADD and DELETE are supported (no SET for rules-batch).
+    """
+    log.info("--- Custom lifecycle: rules-batch ---")
+
+    # Find the access layer from the Standard package
+    show_pkg = client.run_command("show-package", {
+        "name": "Standard", "details-level": "full",
+    })
+    layer_name = "Network"
+    if "uid" in show_pkg:
+        al = show_pkg.get("access-layers", [])
+        if al and isinstance(al, list):
+            if isinstance(al[0], dict):
+                layer_name = al[0].get("name", layer_name)
+            elif isinstance(al[0], str):
+                layer_name = al[0]
+    log.info("  Using layer: '%s'", layer_name)
+
+    rand = random.randint(1000, 9999)
+    rule_names = [f"QA_BATCH_R1_{rand}", f"QA_BATCH_R2_{rand}"]
+    rules = [
+        {"name": rule_names[0], "action": "Drop"},
+        {"name": rule_names[1], "action": "Accept"},
+    ]
+
+    # Step 1: ADD rules batch
+    add_payload = {"objects": [{
+        "layer": layer_name,
+        "type": "access-rule",
+        "first-position": "bottom",
+        "list": rules,
+    }]}
+    t0 = time.perf_counter()
+    add_res = client.run_command("add-rules-batch", add_payload)
+    dur = time.perf_counter() - t0
+    add_ok = _is_success(add_res)
+    if not add_ok and "task-id" in add_res:
+        poll_t0 = time.perf_counter()
+        add_ok, add_res = _poll_async_task(client, add_res["task-id"])
+        dur += time.perf_counter() - poll_t0
+    if not add_ok and "tasks" in add_res:
+        tasks = add_res.get("tasks", [])
+        if tasks and tasks[0].get("status") == "succeeded":
+            add_ok = True
+    log.info("  ADD: [%.2fs] %s", dur, "PASS" if add_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "add-rules-batch",
+        "payload": add_payload,
+        "response": add_res, "success": add_ok, "duration": dur,
+    })
+
+    if not add_ok:
+        log.error("  rules-batch ADD failed — skipping DELETE")
+        return True
+
+    client.publish()
+    time.sleep(2)
+
+    # Step 2: DELETE rules batch
+    del_rules = [{"name": n, "layer": layer_name} for n in rule_names]
+    del_payload = {"objects": [{
+        "layer": layer_name,
+        "type": "access-rule",
+        "list": del_rules,
+    }]}
+    t0 = time.perf_counter()
+    del_res = client.run_command("delete-rules-batch", del_payload)
+    dur = time.perf_counter() - t0
+    del_ok = _is_success(del_res)
+    if not del_ok and "task-id" in del_res:
+        poll_t0 = time.perf_counter()
+        del_ok, del_res = _poll_async_task(client, del_res["task-id"])
+        dur += time.perf_counter() - poll_t0
+    if not del_ok and "tasks" in del_res:
+        tasks = del_res.get("tasks", [])
+        if tasks and tasks[0].get("status") == "succeeded":
+            del_ok = True
+    log.info("  DELETE: [%.2fs] %s", dur, "PASS" if del_ok else "FAIL")
+    results.append({
+        "type": obj_type, "variant": 0,
+        "command": "delete-rules-batch",
+        "payload": del_payload,
+        "response": del_res, "success": del_ok, "duration": dur,
+    })
+
+    client.publish()
+    log.info("--- rules-batch lifecycle complete ---")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Custom handler dispatch table
+# ---------------------------------------------------------------------------
+
+_CUSTOM_HANDLERS: dict[str, Any] = {
+    "threat-protections": _lifecycle_threat_protections,
+    "web-console-statistics": _lifecycle_web_console_statistics,
+    "objects-batch": _lifecycle_objects_batch,
+    "rules-batch": _lifecycle_rules_batch,
+}

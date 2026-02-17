@@ -15,14 +15,14 @@ Usage::
     engine = APIQAEngine(client, spec_url)
     engine.fetch_spec()
     engine.run_lifecycle_test("host", add_cmd_spec)
-    engine.export_report("reports/QA_RAW_DATA.json")
+    engine.export_report("output/QA_RAW_DATA.json")
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from cp_qa.engine import demo, lifecycle, reports, spec
+from cp_qa.engine import capture, demo, lifecycle, reports, spec
 from cp_qa.logging import get_logger
 
 log = get_logger(__name__)
@@ -154,7 +154,7 @@ class APIQAEngine:
         alongside its example payloads.
 
         Args:
-            base_dir: Examples base directory (e.g. ``reports/examples``).
+            base_dir: Payloads base directory (e.g. ``output/payloads``).
         """
         reports.export_per_type_reports(self.results, base_dir, api_version=self.api_version, version_source=self.version_source)
 
@@ -188,6 +188,14 @@ class APIQAEngine:
         """
         return demo.run_demo_cleanup(self.client, manifest)
 
+    def create_demo_topology(self) -> list[dict]:
+        """Create realistic network topology objects for the demo.
+
+        Returns:
+            List of manifest entries.
+        """
+        return demo.create_demo_topology(self.client)
+
     def create_demo_services(self) -> list[dict]:
         """Create service objects for the demo policy.
 
@@ -217,3 +225,18 @@ class APIQAEngine:
             List of ``{"type": str, "name": str, "uid": str}`` dicts.
         """
         return demo.discover_demo_objects(self.client)
+
+    def capture_policy_blueprint(self, package_name: str = "Standard") -> dict:
+        """Pull a live policy from the SMS and return a deployable blueprint.
+
+        Fetches the named package, all its access layers, inline layers,
+        and every object referenced in the rulebase.  Returns a blueprint
+        dict in the same format as ``blueprints/demo_policy_blueprint.json``.
+
+        Args:
+            package_name: Name of the policy package to capture.
+
+        Returns:
+            Blueprint dict, or ``{}`` if the package is not found.
+        """
+        return capture.capture_policy_blueprint(self.client, package_name)

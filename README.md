@@ -98,7 +98,7 @@ cp-qa -m <MGMT_IP> -u <USER> --mode demo --action create
 cp-qa -m <MGMT_IP> -u <USER> --mode demo --action cleanup
 ```
 
-Objects are created with a `DEMO_` prefix (e.g., `DEMO_HOST_1`, `DEMO_NETWORK_1`) and published immediately. The manifest is saved to `reports/demo_manifest.json`.
+Objects are created with a `DEMO_` prefix (e.g., `DEMO_HOST_1`, `DEMO_NETWORK_1`) and published immediately. The manifest is saved to `output/demo_manifest.json`.
 
 ### Debug Options
 
@@ -118,34 +118,40 @@ cp-qa -m <MGMT_IP> -u <USER> --quiet
 
 ### CLI Flags
 
-| Flag | Description | Default |
-| :--- | :--- | :--- |
-| `-m, --management` | Management Server IP | *(required)* |
-| `-u, --user` | Username | `admin` |
-| `-p, --password` | Password (prompted securely if omitted) | |
-| `-d, --domain` | MDS domain name | |
-| `--api-key` | API key for key-based authentication | |
-| `-s, --section` | API section to test | `Network Objects` |
-| `--mode` | `qa` (full CRUD lifecycle) or `demo` (create-all / cleanup-all) | `qa` |
-| `--action` | Demo mode action: `create` or `cleanup` | `create` |
-| `--type` | Only test a specific object type (e.g. `host`) | |
-| `--debug` | Print DEBUG-level messages to the console | |
-| `--quiet` | Suppress INFO messages (warnings and errors only) | |
-| `--dry-run` | Generate payloads without calling the API | |
-| `--version` | Show version and exit | |
+Every flag can also be set via environment variable (in `config/.env`). CLI flags override `.env` values.
+
+| Flag | Env Variable | Description | Default |
+| :--- | :--- | :--- | :--- |
+| `-m, --management` | `CP_MGMT_SERVER` | Management Server IP | *(required)* |
+| `-u, --user` | `CP_MGMT_USER` | Username | `admin` |
+| `-p, --password` | `CP_MGMT_PASSWORD` | Password (prompted if omitted) | |
+| `-d, --domain` | `CP_MGMT_DOMAIN` | MDS domain name | |
+| `--api-key` | `CP_MGMT_API_KEY` | API key for key-based auth | |
+| `--api-version` | `CP_API_VERSION` | Override auto-detected spec version | |
+| `-s, --section` | `CP_QA_SECTION` | API section to test | `Network Objects` |
+| `--mode` | `CP_QA_MODE` | `qa` or `demo` | `qa` |
+| `--action` | `CP_QA_ACTION` | Demo action: `create` / `cleanup` / `push-blueprint` | `create` |
+| `--blueprint` | `CP_BLUEPRINT_PATH` | Custom blueprint JSON path | `blueprints/demo_policy_blueprint.json` |
+| `--type` | `CP_QA_TYPE` | Only test a specific object type | |
+| `--debug` | `CP_QA_DEBUG` | Verbose debug output (`true`/`false`) | `false` |
+| `--quiet` | `CP_QA_QUIET` | Suppress INFO messages (`true`/`false`) | `false` |
+| `--dry-run` | `CP_QA_DRY_RUN` | Generate payloads without API calls (`true`/`false`) | `false` |
+| `--version` | | Show version and exit | |
 
 ## Output
 
 ### QA Mode
 
 ```
-reports/
+output/
   QA_SUMMARY_REPORT.md        # Markdown audit report with timing & variant analysis
   QA_RAW_DATA.json             # Full request/response data for every lifecycle step
-  examples/
+  payloads/
     host/
       variant_1__ipv4-address.json
       variant_2__ipv6-address.json
+      QA_REPORT.md             # Per-type audit report
+      QA_RAW_DATA.json         # Per-type raw data
     network/
       variant_1__mask-length_mask-length4_subnet4.json
       ...
@@ -154,11 +160,14 @@ reports/
 ### Demo Mode
 
 ```
-reports/
+output/
   demo_manifest.json           # Tracks all created objects for cleanup
+
+blueprints/
+  demo_policy_blueprint.json   # Portable policy template (tracked in git)
 ```
 
-Each example file contains the exact proven `add-<type>` payload with professional naming and comments — ready for direct use.
+Each payload file contains the exact proven `add-<type>` payload with professional naming and comments — ready for direct use.
 
 ## Project Structure
 
@@ -184,14 +193,18 @@ cp-api-qa-tool/
 │           ├── type_defaults.py    # Type-specific known-good defaults
 │           ├── autofix.py          # Self-healing payload auto-correction
 │           ├── lifecycle.py        # CRUD lifecycle test execution
-│           ├── reports.py          # JSON/Markdown/example export
+│           ├── reports.py          # JSON/Markdown/payload export
 │           └── demo.py             # Demo create/cleanup/services/policy
-├── config/                         # Configuration & credentials (.env)
+├── blueprints/                     # Portable policy templates (tracked in git)
+│   └── demo_policy_blueprint.json  # Default demo policy blueprint
+├── config/                         # Configuration & credentials
+│   ├── .env                       # Your local config (git-ignored)
+│   └── .env.example               # Template with all supported variables
 └── tests/                          # Placeholder for future tests
     └── __init__.py
 ```
 
-Credentials can also be passed via environment variables: `CP_MGMT_SERVER`, `CP_MGMT_USER`, `CP_MGMT_PASSWORD` (stored in `config/.env`).
+All CLI flags can be configured via environment variables in `config/.env`. See `config/.env.example` for the full list.
 
 ## Development
 
@@ -209,6 +222,85 @@ pip install -e ".[dev]"
 
 > [!IMPORTANT]
 > This tool creates and deletes objects during testing. Use in **lab/QA environments only** — never run against production management servers.
+
+<details>
+<summary><b>Demo Policy Blueprint: Push from JSON (Click to expand)</b></summary>
+
+### Overview
+
+The demo mode includes a **blueprint system** that stores the entire demo policy topology as a portable JSON file at `blueprints/demo_policy_blueprint.json`. This file serves as both a backup and a deployment source — you can push the full policy to any Check Point Management Server directly from the blueprint.
+
+### What the Blueprint Contains
+
+The blueprint defines a realistic enterprise firewall topology based on the [Ansible Dynamic Policy Demo](https://github.com/alshawwaf/Ansible_Projects/tree/main/Dynamic%20Policy%20Demo) project:
+
+| Category | Objects |
+|:---|:---|
+| **Hosts** (6) | DNS servers (8.8.8.8, 8.8.4.4), Jump Host, Kali Linux, Windows Client (with static NAT), Windows Server (with static NAT) |
+| **Networks** (5) | LAN (10.1.1.0/24), DMZ (10.1.2.0/24), Mgmt (10.1.3.0/24), IoT (10.1.4.0/24), External (203.0.113.0/24) |
+| **Groups** (1) | Internal Networks (all 4 internal subnets) |
+| **Network Feeds** (4) | Internal DNS, Public DNS, Attackers, Targets |
+| **Gateway** (1) | DEMO_GW — perimeter firewall (10.1.3.1) |
+| **Services** (6) | HTTP, HTTPS, SSH, DNS, ICMP Echo, LDAP/RPC |
+| **Service Groups** (3) | Web (HTTP+HTTPS), LDAP_All (LDAP+RPC+DCE-RPC), Mail (SMTP+POP3+IMAP) |
+| **Policy Package** | DEMO_Policy with Network layer + inline DNS layer |
+| **Access Rules** (10) | Silent Drop, CP Updates, Mgmt Access, Stealth, DNS Inspection (inline), Outbound, Mail, LDAP, DMZ Inbound, Cleanup |
+| **Sections** (5) | Management, DNS, Network Traffic, DMZ, Clean up rule |
+
+### Deploying from the Blueprint
+
+```bash
+# Deploy the default blueprint
+cp-qa -m <MGMT_IP> -u admin --mode demo --action push-blueprint
+
+# Deploy a custom blueprint
+cp-qa -m <MGMT_IP> -u admin --mode demo --action push-blueprint --blueprint path/to/my_policy.json
+
+# Clean up everything (same as regular demo cleanup)
+cp-qa -m <MGMT_IP> -u admin --mode demo --action cleanup
+```
+
+### Creating Your Own Blueprint
+
+The blueprint JSON has three top-level sections: `topology`, `services`, and `policy`. You can edit the file directly to customize the demo environment:
+
+```json
+{
+  "topology": {
+    "hosts": [ { "name": "...", "ipv4-address": "...", "color": "..." } ],
+    "networks": [ { "name": "...", "subnet4": "...", "mask-length4": 24 } ],
+    "groups": [ { "name": "...", "members": ["..."] } ],
+    "network-feeds": [ { "name": "...", "feed-url": "...", "feed-format": "Flat List" } ],
+    "gateways": [ { "name": "...", "ipv4-address": "...", "firewall": true } ]
+  },
+  "services": {
+    "individual": [ { "name": "...", "type": "service-tcp", "port": "80" } ],
+    "groups": [ { "name": "...", "members": ["..."] } ]
+  },
+  "policy": {
+    "package": { "name": "...", "access": true, "threat-prevention": false },
+    "inline-layers": [ { "name": "...", "rules": [ ... ] } ],
+    "network-layer": {
+      "sections": [
+        { "section": "Section Name", "rules": [ { "name": "...", "source": "...", "action": "Accept" } ] }
+      ]
+    }
+  }
+}
+```
+
+All objects must use the `DEMO_` prefix to be discoverable by the cleanup command.
+
+### Differences: `create` vs `push-blueprint`
+
+| | `--action create` | `--action push-blueprint` |
+|:---|:---|:---|
+| **Source** | Hardcoded in `demo.py` | Reads from JSON file |
+| **Customizable** | Requires code changes | Edit the JSON file |
+| **Portable** | No | Yes — share/version the JSON |
+| **Same topology** | Yes (default blueprint matches) | Yes (or your custom version) |
+
+</details>
 
 ## License
 
