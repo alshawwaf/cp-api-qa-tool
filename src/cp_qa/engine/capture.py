@@ -16,42 +16,14 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from cp_qa.engine.transformer import (
+    ANY_NAMES as _ANY_NAMES,
+    WELLKNOWN_UIDS as _WELLKNOWN_UIDS,
+    is_builtin as _is_builtin,
+)
 from cp_qa.logging import get_logger
 
 log = get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-#: Domain names that belong to Check Point built-in objects.
-_BUILTIN_DOMAINS = frozenset({
-    "Check Point Data",
-    "APPI Data",
-    "IPS Data",
-    "Check Point",
-})
-
-#: Object names that are always treated as "any" (wildcard).
-_ANY_NAMES = frozenset({"any", "all", "all_users", "all ip and non-ip traffic"})
-
-#: Well-known Check Point built-in object UIDs → human-readable names.
-#: Used as a fallback when the objects-dictionary is missing an entry.
-_WELLKNOWN_UIDS: dict[str, str] = {
-    # Actions
-    "6c488338-8eec-4103-ad21-cd461ac2c472": "Accept",
-    "6c488338-8eec-4103-ad21-cd461ac2c473": "Drop",
-    "6c488338-8eec-4103-ad21-cd461ac2c474": "Reject",
-    "6c488338-8eec-4103-ad21-cd461ac2c476": "Accept",   # Accept (alternate UID variant)
-    "ea28da66-c5ed-11e2-bc66-aa5c6188709b": "Apply Layer",
-    # Track types
-    "598ead32-aa42-4615-90ed-f51a5928d41d": "Log",
-    "29e53e3d-23bf-48fe-b6b1-d59bd88036f9": "None",
-    "902d7be8-c6ef-445d-aaba-d8da6ae3e22c": "Extended Log",
-    "cce0fa3f-b6bb-4e9b-b6e6-97af04042af3": "Detailed Log",
-    "a5e4b1e5-4dfc-41e1-8e94-f8b13eb81cbf": "Full Log",
-    "91a5e99e-4c50-4ad5-9996-2d5ace39b892": "Alert",
-}
 
 
 # ===========================================================================
@@ -311,19 +283,6 @@ def _collect_inline_layer_names(item: dict, names: set) -> None:
 # ===========================================================================
 # Object resolution helpers
 # ===========================================================================
-
-def _is_builtin(obj: dict) -> bool:
-    """Return True if *obj* is a Check Point built-in (not user-created)."""
-    if not isinstance(obj, dict):
-        return True
-    name = obj.get("name", "").lower()
-    if name in _ANY_NAMES or not name:
-        return True
-    domain = obj.get("domain", {})
-    if isinstance(domain, dict):
-        return domain.get("name", "") in _BUILTIN_DOMAINS
-    return False
-
 
 def _get_name(ref: Any, obj_reg: dict) -> str:
     """Return the object name from an inline dict or a UID string."""

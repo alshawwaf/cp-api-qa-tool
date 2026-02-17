@@ -35,6 +35,7 @@ from cp_qa.client import APIClient
 from cp_qa.constants import (
     API_SPEC_URL,
     DEFAULT_BLUEPRINT_PATH,
+    DEFAULT_EXPORT_PATH,
     MANIFEST_PATH,
     NETWORK_OBJECTS_TYPES,
     QA_PAYLOADS_DIR,
@@ -684,6 +685,54 @@ def _run_capture_blueprint(engine: APIQAEngine, output_path: str) -> None:
     log.info("Deploy with: cp-qa -m <server> -u admin --mode demo --action push-blueprint --blueprint %s", output_path)
 
 
+def _run_export_config(engine: APIQAEngine, output_path: str) -> None:
+    """Export all user-created objects and policies from the SMS.
+
+    Enumerates every supported object type, transforms each into a
+    ready-to-import ``add-*`` payload, and writes the result to a JSON
+    file that can be replayed via ``--action import-config``.
+
+    Args:
+        engine:      Initialised :class:`APIQAEngine`.
+        output_path: Destination path for the export JSON.
+    """
+    log.info("=== EXPORT CONFIG: reading from live SMS ===")
+    result = engine.export_full_config(output_path=output_path)
+    total = result.get("total_commands", 0)
+    if total:
+        log.info("Export complete: %d commands written to %s", total, output_path)
+        log.info(
+            "Import with: cp-qa -m <server> -u admin --mode demo "
+            "--action import-config --export-path %s",
+            output_path,
+        )
+    else:
+        log.warning("Export produced 0 commands — check connection and server state.")
+
+
+def _run_import_config(
+    engine: APIQAEngine, config_path: str, dry_run: bool = False,
+) -> None:
+    """Import objects and policies from an export file.
+
+    Replays ``add-*`` commands with idempotency checks (skips objects
+    that already exist) and publishes between dependency phases.
+
+    Args:
+        engine:      Initialised :class:`APIQAEngine`.
+        config_path: Path to the export JSON file.
+        dry_run:     If True, validate without making API calls.
+    """
+    log.info("=== IMPORT CONFIG: replaying from %s ===", config_path)
+    stats = engine.import_config(config_path=config_path, dry_run=dry_run)
+    log.info(
+        "Import result: %d created, %d skipped, %d failed",
+        stats.get("created", 0),
+        stats.get("skipped", 0),
+        stats.get("failed", 0),
+    )
+
+
 def _save_manifest(manifest: list[dict]) -> None:
     """Save manifest to disk."""
     os.makedirs(os.path.dirname(MANIFEST_PATH), exist_ok=True)
@@ -771,6 +820,9 @@ def main() -> None:
             "  cp-qa ... --action push-blueprint --blueprint my_policy.json\n"
             "  cp-qa -m 10.0.0.1 -u admin --mode demo --action capture-blueprint\n"
             "  cp-qa ... --action capture-blueprint --blueprint blueprints/my_capture.json\n"
+            "  cp-qa -m 10.0.0.1 -u admin --mode demo --action export-config\n"
+            "  cp-qa ... --action export-config --export-path exports/my_backup.json\n"
+            "  cp-qa ... --action import-config --export-path exports/my_backup.json\n"
             "  cp-qa -m 10.0.0.1 -u admin --debug                  # Verbose\n"
             "  cp-qa -m 10.0.0.1 -u admin --dry-run --type host    # No API calls\n"
         ),
@@ -825,7 +877,8 @@ def main() -> None:
     )
     mode_grp.add_argument(
         "--action",
-        choices=["create", "cleanup", "push-blueprint", "capture-blueprint"],
+        choices=["create", "cleanup", "push-blueprint", "capture-blueprint",
+                 "export-config", "import-config"],
         default=os.environ.get("CP_QA_ACTION", "create"),
         help="Demo mode action (or set CP_QA_ACTION)",
     )
@@ -833,6 +886,11 @@ def main() -> None:
         "--blueprint",
         default=os.environ.get("CP_BLUEPRINT_PATH"),
         help="Path to demo policy blueprint JSON (or set CP_BLUEPRINT_PATH)",
+    )
+    mode_grp.add_argument(
+        "--export-path",
+        default=os.environ.get("CP_EXPORT_PATH"),
+        help="Path for export/import JSON file (or set CP_EXPORT_PATH)",
     )
     mode_grp.add_argument(
         "--type",
@@ -980,8 +1038,8 @@ def main() -> None:
         if args.mode == "qa":
             _run_qa_mode(engine, client, target_types, dry_run=args.dry_run)
         elif args.mode == "demo":
-            if args.dry_run:
-                log.warning("--dry-run is only supported in QA mode.")
+            if args.dry_run and args.action not in ("import-config",):
+                log.warning("--dry-run is only supported in QA mode and import-config.")
                 return
             if args.action == "create":
                 _run_demo_create(engine, client, target_types)
@@ -993,6 +1051,12 @@ def main() -> None:
             elif args.action == "capture-blueprint":
                 bp_path = args.blueprint or DEFAULT_BLUEPRINT_PATH
                 _run_capture_blueprint(engine, bp_path)
+            elif args.action == "export-config":
+                exp_path = args.export_path or DEFAULT_EXPORT_PATH
+                _run_export_config(engine, exp_path)
+            elif args.action == "import-config":
+                exp_path = args.export_path or DEFAULT_EXPORT_PATH
+                _run_import_config(engine, exp_path, dry_run=args.dry_run)
 
     finally:
         if not args.dry_run:

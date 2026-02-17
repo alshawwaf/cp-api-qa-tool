@@ -20,6 +20,7 @@ venv/
 # Runtime artifacts (regenerated on each run)
 logs/
 output/
+exports/
 
 # Environment / secrets
 .env

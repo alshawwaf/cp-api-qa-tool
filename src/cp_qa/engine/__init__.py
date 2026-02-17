@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cp_qa.engine import capture, demo, lifecycle, reports, spec
+from cp_qa.engine import capture, demo, exporter, importer, lifecycle, reports, spec
 from cp_qa.logging import get_logger
 
 log = get_logger(__name__)
@@ -225,6 +225,51 @@ class APIQAEngine:
             List of ``{"type": str, "name": str, "uid": str}`` dicts.
         """
         return demo.discover_demo_objects(self.client)
+
+    # ------------------------------------------------------------------
+    # Export / Import
+    # ------------------------------------------------------------------
+
+    def export_full_config(
+        self,
+        output_path: str = "exports/sms_export.json",
+        package_names: list[str] | None = None,
+    ) -> dict:
+        """Export all user-created objects and policies to a JSON file.
+
+        The output contains ready-to-import ``add-*`` commands that can be
+        replayed on a fresh SMS via :meth:`import_config`.
+
+        Args:
+            output_path:   Destination path for the export JSON.
+            package_names: Policy packages to export (default: all).
+
+        Returns:
+            Export metadata dict (total commands, path, etc.).
+        """
+        return exporter.export_full_sms(
+            self.client, self.spec, package_names=package_names,
+            output_path=output_path,
+        )
+
+    def import_config(self, config_path: str, dry_run: bool = False) -> dict:
+        """Import objects and policies from an export file.
+
+        Replays ``add-*`` commands with idempotency (skips existing objects)
+        and dependency-aware publish phasing.
+
+        Args:
+            config_path: Path to the export JSON file.
+            dry_run:     If True, validate without making API calls.
+
+        Returns:
+            ``{"created": int, "skipped": int, "failed": int, "errors": list}``
+        """
+        return importer.import_config(self.client, config_path, dry_run=dry_run)
+
+    # ------------------------------------------------------------------
+    # Capture blueprint
+    # ------------------------------------------------------------------
 
     def capture_policy_blueprint(self, package_name: str = "Standard") -> dict:
         """Pull a live policy from the SMS and return a deployable blueprint.

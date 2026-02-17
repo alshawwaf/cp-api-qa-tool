@@ -24,6 +24,7 @@ QA_SUMMARY_REPORT_PATH = "output/QA_SUMMARY_REPORT.md"
 QA_PAYLOADS_DIR = "output/payloads"
 BLUEPRINT_DIR = "blueprints"
 DEFAULT_BLUEPRINT_PATH = "blueprints/demo_policy_blueprint.json"
+DEFAULT_EXPORT_PATH = "exports/sms_export.json"
 
 # ---------------------------------------------------------------------------
 # Naming prefixes
